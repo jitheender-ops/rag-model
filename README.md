@@ -13,6 +13,7 @@ make guardrails   # D4 -> reports/guardrails.md
 make latency      # D3 -> reports/latency.md + latency.svg
 make demo         # ask one question through the serving path, with its spans
 make serve        # the browser demo: mic in, answer + timings out, on localhost:8000
+make tune         # sweep the answer path against MS MARCO's own answers
 make legs         # both excluded legs measured: STT before t0, TTS after t1
 make submit       # chunking -> calibrate -> guardrails -> latency, then splices the tables here
 ```
@@ -161,6 +162,7 @@ d1/ingest.py          stage 0: stream MSMARCO-XI into data/raw/ (real queries, r
 d1/                   corpus freeze, 8 chunkers, one index, one eval loop
 service/pipeline.py   the serving path: 6 timed stages, 4 gates, budget-enforced
 service/calibrate.py  gates 2 and 4's floors, each fitted on a set that does not grade it
+service/tune.py       answer F1 vs the human answers, paired and bootstrapped
 service/ask.py        `make demo`: one question end to end, spans and gates printed
 service/server.py     `make serve`: the page and POST /ask on one origin, stdlib http
 stt/sarvam.py         Sarvam batch + streaming; where t0 comes from, and where retries live
@@ -248,7 +250,7 @@ number flatters the confusion matrix.
 ## D3 — latency analytics
 
 <!-- D3V:START -->
-> **200 ms budget: PASS.** 1500/1500 requests inside the window across every mode (warm 0/500, cold 0/500, conc 0/500 over budget). Slowest single request 63.8 ms. Excluded legs are listed below and are not part of this verdict.
+> **200 ms budget: PASS.** 1500/1500 requests inside the window across every mode (warm 0/500, cold 0/500, conc 0/500 over budget). Slowest single request 180.1 ms. Excluded legs are listed below and are not part of this verdict.
 <!-- D3V:END -->
 
 500 frozen queries (350 in-domain, 100 spoken-style paraphrases, 50 out-of-domain), cold
@@ -261,13 +263,13 @@ concurrency-4 pass — because reporting the friendliest of three is not a verdi
 | stage             |  P50 |  P70 |  P95 | P100 |
 |-------------------|------|------|------|------|
 | input guards      | 0.01 | 0.01 | 0.01 | 0.02 |
-| embed query       | 6.91 | 7.39 | 7.99 | 15.68 |
-| dense + bm25 + rrf | 1.05 | 1.50 | 2.33 | 3.15 |
+| embed query       | 7.30 | 7.77 | 9.55 | 14.94 |
+| dense + bm25 + rrf | 1.21 | 1.69 | 2.55 | 3.38 |
 | rerank            | 0.00 | 0.00 | 0.00 | 0.00 |
-| generate          | 0.10 | 0.11 | 0.26 | 1.14 |
-| verify            | 0.03 | 0.03 | 0.05 | 0.50 |
-| END-TO-END (warm) | 8.22 | 8.77 | 10.04 | 16.33 |
-| END-TO-END (cold) | 8.49 | 9.00 | 11.87 | 22.26 |
+| generate          | 12.52 | 15.58 | 23.15 | 96.55 |
+| verify            | 0.04 | 0.04 | 0.06 | 0.79 |
+| END-TO-END (warm) | 20.16 | 23.62 | 32.24 | 105.40 |
+| END-TO-END (cold) | 21.47 | 24.45 | 33.22 | 147.18 |
 <!-- D3:END -->
 
 ## D4 — guardrail metrics
@@ -278,9 +280,9 @@ abstention, so the false-abstention rate on those 130 is reported beside it.
 <!-- D4:START -->
 | metric | value | denominator | grading |
 |---|---|---|---|
-| correct abstention | 70.0% | 150 should-abstain | automatic |
-| false abstention | 0.8% | 130 should-answer | automatic, target < 8% |
-| hallucination rate | 0.0% | 174 answers given | automatic + human sample |
+| correct abstention | 78.0% | 150 should-abstain | automatic |
+| false abstention | 3.1% | 130 should-answer | automatic, target < 8% |
+| hallucination rate | 0.0% | 159 answers given | automatic + human sample |
 | injection resistance | 100.0% | 30 injections | canary string match |
 <!-- D4:END -->
 
@@ -306,7 +308,7 @@ upgrade path:
 | text-to-speech | **real** — Sarvam bulbul, four languages, measured at ~680 ms P50 for an answer-length line | — |
 | gate 2 floor | **measured** — swept on D3's frozen set, stamped in `data/score_floor.json` | — |
 | index | exact search (dense matmul / sparse postings) | faiss/qdrant HNSW behind `Index.search()` |
-| generation | extractive (best sentence from the top chunk) | LLM at temperature 0 behind `generate()` |
+| generation | extractive, and **tuned**: the sentence is chosen by embedding, in the top chunk only (+0.016 answer F1 [+0.006, +0.028] over lexical choice, 1200 queries) | LLM at temperature 0 behind `generate()` |
 | gate 4 verifier | lexical support + coverage, floor measured | NLI cross-encoder behind `verify()` — the highest-value swap in the repo |
 | reranker | **off** — the lexical stand-in measurably hurt the ranking (−2.7 pts top-1, −8.7 pts top-4 on 300 held-out queries), so the stage is empty and says why | cross-encoder behind `rerank()`, `RERANK=lexical` restores the old behaviour |
 | hybrid fusion | dense + BM25 at weight 0.1, chosen by sweep — equal weight cost 5.7 pts of top-1 to buy 1.7 pts of recall@50 | reciprocal-rank fusion with a trained weight |

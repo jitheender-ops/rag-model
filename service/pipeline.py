@@ -29,6 +29,11 @@ MAX_TOKENS, MAX_TOKENS_DEGRADED = 96, 48
 # stage budget below the stage's own P50 makes every request look like a violation.
 EMBED_BUDGET_MS = float(os.getenv("EMBED_BUDGET_MS", "30"))
 LEXICAL_RESERVE_MS = 20.0   # what retrieve+rerank+generate+verify need after the encoder
+# What must be left when generate stops waiting for sentence vectors: verify's own 20 ms
+# budget plus the lexical fallback, which costs ~10 ms under 4-way contention because it is
+# Python under a contended GIL. At 10 ms this was too tight and verify got SKIPPED -- see
+# answer(), where a skipped grounding check is now an abstention rather than a free pass.
+GENERATE_RESERVE_MS = 30.0
 CALIBRATION = "data/score_floor.json"
 
 
@@ -112,6 +117,7 @@ class Ctx:
     extractive: bool = False
     cache_hit: bool = False
     cited: str | None = None
+    qvec: object | None = None      # kept for generate(): the encode is already paid for
     lexical_only: bool = False      # the encoder missed its deadline; BM25 carries this one
 
 
@@ -158,6 +164,23 @@ def embed_by(text: str, deadline_ms: float):
     from concurrent.futures import TimeoutError as FutureTimeout
     try:
         return _pool().submit(embed, text, "query").result(timeout=deadline_ms / 1000)
+    except FutureTimeout:
+        return None
+
+
+def embed_many_by(texts: list[str], deadline_ms: float):
+    """Sentence vectors within a deadline, or None to fall back to lexical selection.
+
+    The same bound as embed_by, for the same reason and learned the same way: making
+    generate() choose its sentence by embedding is a measured quality win, and it put three
+    concurrent requests over 200 ms the first time it shipped because the call was
+    unbounded. A quality upgrade that can miss the deadline has to be able to yield -- and
+    the thing it yields to, lexical selection, is only 0.016 F1 worse.
+    """
+    from concurrent.futures import TimeoutError as FutureTimeout
+    from d1.index import embed_many
+    try:
+        return _pool().submit(embed_many, texts, "passage").result(timeout=deadline_ms / 1000)
     except FutureTimeout:
         return None
 
@@ -239,19 +262,55 @@ def rerank(ctx: Ctx, degraded=False):
 
 @stage("generate", budget_ms=120, degradable=True)
 def generate(ctx: Ctx, texts: dict, degraded=False):
-    n_ctx = 2 if degraded else 4
+    """Extractive: the best sentence of the top-ranked chunk.
+
+    Every choice here was measured by service/tune.py against MS MARCO's own answers, on
+    1200 held-out queries, paired and bootstrapped (token F1, 95% CI vs what shipped):
+
+      dense sentence, top 1   +0.0163  [+0.0055, +0.0280]  SIGNIFICANT   +12 ms
+      dense sentence, top 4   -0.0033  [-0.0172, +0.0115]  noise         +32 ms
+      whole top chunk         -0.0379  [-0.0516, -0.0251]  SIGNIFICANT     0 ms
+
+    So: pick by embedding, not by term overlap -- lexical similarity is exactly the signal
+    that fails on a paraphrase, and a spoken question usually is one. Look at ONE chunk, not
+    four: the extra three cost 32 ms and buy nothing. And do select a sentence, because
+    reading the whole chunk is the one variant that is significantly worse.
+
+    Gold citation rose 31.5% -> 34.6% with the same retrieval, which is the same finding
+    from the other side: the sentence you choose decides the passage you cite.
+    """
+    n_ctx = 1
     cap = MAX_TOKENS_DEGRADED if degraded else MAX_TOKENS
-    q = content(ctx.query)
+    dense = ctx.qvec is not None and not degraded    # degraded skips the encode, not the stage
     best, best_score, best_cid = "", -1.0, None
+    q = content(ctx.query)
     for cid, _, _ in ctx.hits[:n_ctx]:
         raw = display(texts.get(cid, ""))
         clean = sanitize(raw)                                        # gate 3
         if clean != raw:
             ctx.trace.event("gate3_context_sanitised", chunk=cid)
-        for s, _, _ in sentences(clean):
-            score = len(q & content(s)) / (len(q) or 1)
-            if score > best_score:
-                best, best_score, best_cid = s, score, cid
+        sents = [s for s, _, _ in sentences(clean)]
+        if not sents:
+            continue
+        vecs = None
+        if dense:
+            left = ctx.budget.remaining() if ctx.budget else TOTAL_MS
+            vecs = embed_many_by(sents, max(5.0, left - GENERATE_RESERVE_MS))
+            if vecs is None:
+                ctx.trace.event("sentence_encode_deadline", chunk=cid, sentences=len(sents))
+                if ctx.budget is not None:
+                    ctx.budget.degradations.append("generate")
+        if vecs is not None:
+            from d1.index import cosine
+            for s, v in zip(sents, vecs):
+                score = cosine(v, ctx.qvec)
+                if score > best_score:
+                    best, best_score, best_cid = s, score, cid
+        else:
+            for s in sents:
+                score = len(q & content(s)) / (len(q) or 1)
+                if score > best_score:
+                    best, best_score, best_cid = s, score, cid
     ctx.answer = " ".join(best.split()[:cap])
     ctx.extractive = True
     ctx.cited = best_cid
@@ -333,6 +392,7 @@ def answer(query: str, index: Index, texts: dict, qid: str = "q",
     input_guards(ctx)
     if not ctx.abstain:
         qvec = embed_query(ctx)
+        ctx.qvec = qvec
         if not ctx.cache_hit:
             retrieve(ctx, {} if qvec is None else qvec)   # an ndarray has no truthiness
             if not ctx.abstain:
@@ -342,7 +402,15 @@ def answer(query: str, index: Index, texts: dict, qid: str = "q",
                     ctx.abstain, ctx.gate = True, "gate2_score"
                 else:
                     pid = index.get(cited).get("pid")
-                    verify(ctx, display((parents or {}).get(pid) or texts.get(cited, "")))
+                    verified = verify(ctx, display((parents or {}).get(pid)
+                                                   or texts.get(cited, "")))
+                    if verified is None and not ctx.abstain:
+                        # the budget skipped gate 4. Grounding is not an optional stage: an
+                        # answer nobody checked is exactly the answer this system exists not
+                        # to give, so running out of time is a refusal, not a free pass.
+                        ctx.abstain, ctx.gate = True, "gate4_unverified"
+                        ctx.reason = "no budget left to verify grounding"
+                        ctx.answer = ""
                     if not ctx.abstain and cache is not None:
                         cache[" ".join(sorted(content(query)))] = (ctx.answer, False, None)
 
@@ -447,11 +515,28 @@ def demo():
     ctx = Ctx("q", ix, Trace("x"), b)
     assert b.check("generate", 120) == "SKIP"
 
+    # a request with no budget left must refuse, not answer unverified
+    starved = answer("In which year was the bridge of Vasco completed?", ix, texts,
+                     budget_ms=0.05)
+    assert starved.meta["abstain"], starved.meta
+    assert not starved.meta["answer"], "an unverified answer must never be returned"
+
     # the encoder deadline shrinks with the budget and never waits past 2x the stage budget
     assert encoder_deadline(200.0) == 200.0 - LEXICAL_RESERVE_MS
     assert encoder_deadline(30.0) == 10.0
     assert encoder_deadline(5.0) == 5.0, "a starved request still gets a floor, not a zero"
     assert embed_by("bridge", 5000.0) is not None, "a generous deadline must return a vector"
+    assert embed_many_by(["a", "b"], 5000.0) is not None
+    # the deadline mechanism itself, timed against a sleep rather than against the encoder:
+    # asserting "the hashed backend cannot embed two words in 100 us" is a race, not a test
+    import time as _time
+    from concurrent.futures import TimeoutError as _Timeout
+    fut = _pool().submit(_time.sleep, 0.2)
+    try:
+        fut.result(timeout=0.001)
+        raise AssertionError("a 1 ms wait on a 200 ms call must time out")
+    except _Timeout:
+        pass
 
     # the fallback that deadline buys: retrieval still runs, lexically, and says so
     lex = Ctx("bridge of Vasco completed", ix, Trace("lex"), None, lexical_only=True)

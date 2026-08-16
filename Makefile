@@ -7,8 +7,9 @@ ROWS ?= 1250
 LANGS ?= hi,ta,bn
 CLIPS ?= data/audio
 PORT ?= 8000
+N ?= 300
 
-.PHONY: all corpus chunking calibrate latency guardrails demo serve stt legs submit check venv clean
+.PHONY: all corpus chunking calibrate latency guardrails demo serve tune stt legs submit check venv clean
 
 all: submit
 
@@ -37,6 +38,10 @@ guardrails:
 ## make demo Q="..."   |   make demo AUDIO=data/audio/clip.wav
 demo:
 	$(PY) service/ask.py $(if $(AUDIO),--audio $(AUDIO),) $(Q)
+
+## sweep the answer-path variants against MS MARCO's own answers (make tune N=1200)
+tune:
+	N=$(N) $(PY) service/tune.py $(N)
 
 ## the browser demo: page and API on one origin, index loaded before the socket opens
 serve:
@@ -72,6 +77,7 @@ check:
 	$(PY) service/ask.py --selfcheck
 	$(PY) service/server.py --selfcheck
 	$(PY) service/calibrate.py --selfcheck
+	$(PY) service/tune.py --selfcheck
 	$(PY) d1/ingest.py --selfcheck
 	$(PY) stt/sarvam.py
 	$(PY) stt/measure.py --selfcheck
