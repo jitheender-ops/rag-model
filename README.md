@@ -98,13 +98,11 @@ A refusal is spoken as a refusal. Reading out an empty answer is silence a user 
 from a crash, and reading out the top passage anyway would undo gate 4 at the last moment,
 where nobody would look for it.
 
-It prints the STT round trip on its own line, outside the total, and only then a combined
-end-to-end number that says what it includes — and never for the mock, whose 0 ms would turn
-that combined figure into fiction, which is exactly the number someone would quote. **The 200 ms budget is `t0 → t1`, not
-mic-to-answer**: `t0` is the instant the server holds a final transcript. A cloud STT leg is
-typically 300 ms–1.5 s, so the honest headline is "retrieval to grounded answer in under
-200 ms", and anyone who asks about the full mic-to-speaker path should be told the STT number
-beside it. That is why the two are never summed into one figure without a label.
+Each leg is printed on its own line and never summed into the total without a label — and
+for the mock STT the combined figure is not printed at all, since a 0 ms leg added to a
+measured window is fiction, and fiction is what gets quoted. **The 200 ms budget is
+`t0 → t1`, not mic-to-speaker.** The honest headline is "retrieval to grounded answer in
+8 ms against a 200 ms budget", with both vendor legs measured and published beside it.
 
 ### The browser demo
 
@@ -124,21 +122,25 @@ POST /ask          {"text": "..."}   or multipart with an `audio` part
 ```
 
 The response is the contract the page itself documents: `transcript`, `answer`,
-`abstained`, `abstain_gate`, `citations[]`, `timings_ms`, `total_ms`, `stt_ms`, `degraded`.
-Two deliberate choices in it:
+`abstained`, `abstain_gate`, `citations[]`, `timings_ms`, `total_ms`, `stt_ms`, `degraded` —
+plus `audio_b64` and `excluded_ms` when you ask it to speak (`?speak=1` or
+`{"speak": true}`; opt-in, because a spoken answer is a vendor call and a second of latency).
+Three deliberate choices in it:
 
 - **the index and the encoder load before the socket opens.** A first request that pays a
   10 s model load is not a request the 200 ms budget describes, and a server that loads
   lazily publishes that lie to whoever tries it first;
 - **`stt_ms` sits beside `total_ms` and is never folded into it** — and for the mock STT the
   combined figure is not emitted at all, because a 0 ms leg added to a measured window is
-  fiction, and fiction is what gets quoted.
+  fiction, and fiction is what gets quoted;
+- **a TTS failure degrades to a text answer**, never to a failed request. The answer already
+  happened, in 8 ms; the vendor being slow afterwards does not unmake it.
 
 Speaking needs `SARVAM_API_KEY` in the server's environment; typing into the box needs
 nothing. `STT_PROVIDER=mock make serve` exercises the whole audio path offline.
 
 To regenerate every table instead of asking one question: `make submit` (~30 min), or
-`make check` for the 20 self-checks, which need no model and no network.
+`make check` for the 21 self-checks, which need no model and no network.
 
 ## The shared spine
 
