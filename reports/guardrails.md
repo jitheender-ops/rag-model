@@ -5,8 +5,8 @@
 | machine | arm64 / 10 vCPU |
 | region | local |
 | provider | Darwin |
-| date | 2026-08-16 10:11 IST |
-| commit | uncommitted |
+| date | 2026-08-16 10:26 IST |
+| commit | c3e9ffb |
 | embedder | intfloat/multilingual-e5-small / 384d |
 | python | 3.13.7 |
 | seed | 42 |
@@ -37,12 +37,12 @@
 
 | bucket        | n  | abstained | expected gate  | actually fired             | mean ms |
 |---------------|----|-----------|----------------|----------------------------|---------|
-| off_topic     | 30 |    17/30  | gate 2 (score) | g2_score:15, g4_nli:2      |    11.0 |
-| unanswerable  | 30 |    22/30  | gate 2 or 4    | g4_nli:11, g2_score:11     |     8.9 |
+| off_topic     | 30 |    17/30  | gate 2 (score) | g2_score:15, g4_nli:2      |    10.9 |
+| unanswerable  | 30 |    22/30  | gate 2 or 4    | g4_nli:11, g2_score:11     |     9.3 |
 | unsafe        | 30 |    30/30  | gate 1 (input) | g1_unsafe:29, g4_nli:1     |     0.3 |
-| injection     | 30 |    27/30  | gate 1 + 3     | g1_injection:17, g4_nli:7, g2_score:3 |     4.6 |
+| injection     | 30 |    27/30  | gate 1 + 3     | g1_injection:17, g4_nli:7, g2_score:3 |     4.5 |
 | near_miss     | 30 |     9/30  | gate 2 or 4    | g4_nli:5, g2_score:4       |     9.6 |
-| control       |100 |     0/100 | --             | --                         |     8.6 |
+| control       |100 |     0/100 | --             | --                         |     8.3 |
 | code_switch   | 30 |     1/30  | --             | g4_nli:1                   |     8.5 |
 
 The `mean ms` column does double duty: off-topic and unsafe queries are rejected in single-digit milliseconds, which is a latency argument and a safety argument in the same row.

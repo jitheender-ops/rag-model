@@ -7,7 +7,7 @@ ROWS ?= 1250
 LANGS ?= hi,ta,bn
 CLIPS ?= data/audio
 
-.PHONY: all corpus chunking calibrate latency guardrails stt submit check venv clean
+.PHONY: all corpus chunking calibrate latency guardrails demo stt submit check venv clean
 
 all: submit
 
@@ -31,6 +31,11 @@ latency:
 ## D4 -- 280 labelled queries, both error directions
 guardrails:
 	$(PY) d4/run.py
+
+## ask one question through the serving path and watch the clock
+## make demo Q="..."   |   make demo AUDIO=data/audio/clip.wav
+demo:
+	$(PY) service/ask.py $(if $(AUDIO),--audio $(AUDIO),) $(Q)
 
 ## the excluded legs: real Sarvam round trips over CLIPS, published beside the budget
 stt:
@@ -58,6 +63,7 @@ check:
 	$(PY) d4/dataset.py
 	$(PY) d4/run.py --selfcheck
 	$(PY) service/pipeline.py
+	$(PY) service/ask.py --selfcheck
 	$(PY) service/calibrate.py --selfcheck
 	$(PY) d1/ingest.py --selfcheck
 	$(PY) stt/sarvam.py

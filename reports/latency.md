@@ -5,8 +5,8 @@
 | machine | arm64 / 10 vCPU |
 | region | local |
 | provider | Darwin |
-| date | 2026-08-16 10:12 IST |
-| commit | uncommitted |
+| date | 2026-08-16 10:27 IST |
+| commit | c3e9ffb |
 | embedder | intfloat/multilingual-e5-small / 384d |
 | python | 3.13.7 |
 | seed | 42 |
@@ -14,7 +14,7 @@
 | budget | 200 ms |
 
 
-> **200 ms budget: PASS.** 1500/1500 requests inside the window across every mode (warm 0/500, cold 0/500, conc 0/500 over budget). Slowest single request 58.3 ms. Excluded legs are listed below and are not part of this verdict.
+> **200 ms budget: PASS.** 1500/1500 requests inside the window across every mode (warm 0/500, cold 0/500, conc 0/500 over budget). Slowest single request 63.8 ms. Excluded legs are listed below and are not part of this verdict.
 
 
 ## The window
@@ -35,13 +35,13 @@ excluded legs: not measured on this run -- `make stt` with SARVAM_API_KEY set an
 | stage             |  P50 |  P70 |  P95 | P100 |
 |-------------------|------|------|------|------|
 | input guards      | 0.01 | 0.01 | 0.01 | 0.02 |
-| embed query       | 7.10 | 7.52 | 8.10 | 14.89 |
-| dense + bm25 + rrf | 1.07 | 1.55 | 2.29 | 3.28 |
+| embed query       | 6.91 | 7.39 | 7.99 | 15.68 |
+| dense + bm25 + rrf | 1.05 | 1.50 | 2.33 | 3.15 |
 | rerank            | 0.00 | 0.00 | 0.00 | 0.00 |
-| generate          | 0.10 | 0.11 | 0.27 | 1.12 |
-| verify            | 0.03 | 0.04 | 0.05 | 0.51 |
-| END-TO-END (warm) | 8.38 | 8.93 | 10.13 | 15.65 |
-| END-TO-END (cold) | 8.61 | 9.20 | 10.72 | 17.11 |
+| generate          | 0.10 | 0.11 | 0.26 | 1.14 |
+| verify            | 0.03 | 0.03 | 0.05 | 0.50 |
+| END-TO-END (warm) | 8.22 | 8.77 | 10.04 | 16.33 |
+| END-TO-END (cold) | 8.49 | 9.00 | 11.87 | 22.26 |
 
 degradation rate: 0.0%   cache hit rate: 10.2%   n=500, seed 42   over-budget: 0/500 (0.0%)
 
@@ -51,12 +51,12 @@ degradation rate: 0.0%   cache hit rate: 10.2%   n=500, seed 42   over-budget: 0
 
 ## P100, said out loud
 
-P100 over 500 samples is one observation: it is the max and it is unstable by construction. P95 = 10.1 ms, P99 = 12.6 ms, P100 = 15.7 ms. P100 = 15.7 ms on `l143` (in_domain, hi); the dominant stage was **embed_query** at 12.1 ms, fallbacks fired: none.
+P100 over 500 samples is one observation: it is the max and it is unstable by construction. P95 = 10.0 ms, P99 = 13.4 ms, P100 = 16.3 ms. P100 = 16.3 ms on `o043` (ood, en); the dominant stage was **embed_query** at 13.8 ms, fallbacks fired: none.
 
 
 ## Concurrency
 
-A separate `--concurrency 4` pass over the same 500 queries: P50 36.0 ms, P95 47.3 ms, over-budget 0/500.
+A separate `--concurrency 4` pass over the same 500 queries: P50 40.8 ms, P95 53.9 ms, over-budget 0/500.
 
 
 ![per-stage latency](latency.svg)
