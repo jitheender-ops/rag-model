@@ -53,6 +53,32 @@ def transcribe(path: str) -> tuple[str, float, str]:
     return t["text"], t["stt_ms"], t["provider"]
 
 
+def say_it(trace, path: str = "/tmp/mic_rag_answer.wav") -> dict | None:
+    """Speak the result and play it. After t1, so it is never inside the measured window.
+
+    Playback failing is not the request failing: the answer already happened, and a missing
+    audio player is a fact about this laptop, not about the system under test."""
+    from tts import sarvam as tts
+    from service.server import script_lang
+    text = tts.line_for(trace.meta)
+    try:
+        wav, ms, provider = tts.speak(trace.meta, script_lang(text))
+    except Exception as e:
+        print(f"spoken   : (tts failed: {str(e)[:90]})")
+        return None
+    with open(path, "wb") as fh:
+        fh.write(wav)
+    for player in (["afplay", path], ["aplay", "-q", path]):
+        try:
+            import subprocess
+            subprocess.run(player, check=True, capture_output=True, timeout=60)
+            break
+        except Exception:
+            continue
+    return {"text": text, "tts_ms": ms, "provider": provider,
+            "seconds": tts.duration_s(wav), "path": path}
+
+
 def render(trace, stt_ms: float | None, stt_provider: str = "") -> str:
     m = trace.meta
     out = [f"question : {m['query']}"]
@@ -95,6 +121,8 @@ def main():
                                     "or STT_PROVIDER=mock to exercise the path offline)")
     ap.add_argument("--nth", type=int, default=0, help="which frozen query, when none is given")
     ap.add_argument("--json", action="store_true", help="print the whole trace as JSON")
+    ap.add_argument("--speak", action="store_true",
+                    help="say the answer out loud (Sarvam TTS; after t1, outside the budget)")
     args = ap.parse_args()
 
     from d3.run import winner_dir
@@ -113,10 +141,18 @@ def main():
 
     ix, texts, parents = load_index(strategy)          # model load happens here, before t0
     trace = answer(query, ix, texts, qid="ask", parents=parents)
+    voice = say_it(trace) if args.speak else None
     if args.json:
-        print(json.dumps(trace.row(), ensure_ascii=False, indent=2))
+        row = trace.row()
+        if voice:
+            row["tts"] = voice
+        print(json.dumps(row, ensure_ascii=False, indent=2))
     else:
         print(render(trace, stt_ms, stt_provider))
+        if voice:
+            print(f"spoken   : {voice['text'][:70]}")
+            print(f"           {voice['tts_ms']:.0f} ms, {voice['seconds']:.1f}s of audio "
+                  f"-> {voice['path']}  [after t1, outside the budget]")
         print(f"\nindex {strategy}, gate 2 floor {SCORE_FLOOR:.4f}")
 
 

@@ -1,0 +1,8 @@
+{
+  "tts_p50": 679.7,
+  "tts_p95": 947.9,
+  "tts_p100": 947.9,
+  "tts_n": 4,
+  "tts_provider": "sarvam:bulbul:v2",
+  "note": "both legs measured outside the 200 ms budget and published beside it: STT before t0, TTS after t1"
+}

@@ -5,8 +5,8 @@
 | machine | arm64 / 10 vCPU |
 | region | local |
 | provider | Darwin |
-| date | 2026-08-16 10:27 IST |
-| commit | c3e9ffb |
+| date | 2026-08-16 11:27 IST |
+| commit | 4035141 |
 | embedder | intfloat/multilingual-e5-small / 384d |
 | python | 3.13.7 |
 | seed | 42 |
@@ -27,7 +27,7 @@
   t1 = last answer token flushed to the socket, after the grounding verdict
 ```
 
-excluded legs: not measured on this run -- `make stt` with SARVAM_API_KEY set and clips in data/audio/ writes `data/excluded_legs.json`, and this line becomes the measurement. They are excluded from the budget, not hidden from the report.
+excluded legs (P50 / P95 / P100, ms): STT _ / _ / _    TTS 679.7    client RTT _    (`_` = no such stage in this repo, or not measured)
 
 
 ## Table shape - warm, n = 500

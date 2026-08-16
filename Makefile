@@ -8,7 +8,7 @@ LANGS ?= hi,ta,bn
 CLIPS ?= data/audio
 PORT ?= 8000
 
-.PHONY: all corpus chunking calibrate latency guardrails demo serve stt submit check venv clean
+.PHONY: all corpus chunking calibrate latency guardrails demo serve stt legs submit check venv clean
 
 all: submit
 
@@ -42,8 +42,9 @@ demo:
 serve:
 	PORT=$(PORT) $(PY) service/server.py
 
-## the excluded legs: real Sarvam round trips over CLIPS, published beside the budget
-stt:
+## both excluded legs: real Sarvam round trips (STT over CLIPS, TTS over answer-shaped
+## text). Needs SARVAM_API_KEY; writes data/excluded_legs.json for D3 to publish.
+legs stt:
 	CLIPS=$(CLIPS) $(PY) stt/measure.py
 
 ## all three, then splice the tables into README.md. calibrate sits between D1 and the two
@@ -74,6 +75,7 @@ check:
 	$(PY) d1/ingest.py --selfcheck
 	$(PY) stt/sarvam.py
 	$(PY) stt/measure.py --selfcheck
+	$(PY) tts/sarvam.py
 
 ## install the real embedder (sentence-transformers + multilingual-e5-small)
 venv:

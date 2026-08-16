@@ -70,6 +70,25 @@ def citations(trace, ctx_hits, texts) -> list[dict]:
     return out
 
 
+def spoken(trace) -> dict:
+    """Speak the result, or say why not. Never fails the request over it.
+
+    TTS is after t1 and outside the budget, so its cost is reported next to total_ms and
+    never inside it -- and a vendor hiccup here must not turn an answer that was produced
+    in 8 ms into an HTTP 500."""
+    from tts import sarvam as tts
+    try:
+        wav, ms, provider = tts.speak(trace.meta, script_lang(tts.line_for(trace.meta)))
+        import base64
+        return {"audio_b64": base64.b64encode(wav).decode(), "audio_mime": "audio/wav",
+                "spoken_text": tts.line_for(trace.meta), "tts_ms": round(ms, 1),
+                "tts_provider": provider, "tts_error": None}
+    except Exception as e:
+        return {"audio_b64": None, "audio_mime": None,
+                "spoken_text": tts.line_for(trace.meta), "tts_ms": None,
+                "tts_provider": None, "tts_error": str(e)[:200]}
+
+
 def to_payload(trace, hits, texts, stt_ms: float | None, stt_provider: str = "") -> dict:
     m = trace.meta
     timings = {v: round(trace.spans.get(k, 0.0), 3) for k, v in TIMING_KEYS.items()}
@@ -93,8 +112,26 @@ def to_payload(trace, hits, texts, stt_ms: float | None, stt_provider: str = "")
         "cache_hit": m.get("cache_hit", False),
         "lexical_only": m.get("lexical_only", False),
         "budget_ms": (m.get("budget") or {}).get("total_ms"),
+        # excluded legs, both of them, on either side of the measured window:
+        #   stt_ms   before t0        tts_ms   after t1
+        "excluded_ms": {"stt": stt_ms, "tts": None},
         "within_budget": trace.total_ms <= ((m.get("budget") or {}).get("total_ms") or 200.0),
     }
+
+
+def script_lang(text: str) -> str:
+    """Which voice to use: the script of the text actually being spoken.
+
+    Not the question's script, which was the first thing tried and is wrong for exactly the
+    queries this system exists to serve: "consensus definition কী" is majority-Latin, and
+    its answer is a Bengali passage. Read the string you are about to say, and a refusal --
+    whose canned line is English -- correctly gets an English voice."""
+    from d1.index import script_of, tokenize
+    seen = {}
+    for tok in tokenize(text):
+        seen[script_of(tok)] = seen.get(script_of(tok), 0) + 1
+    best = max(seen, key=lambda k: seen[k]) if seen else "latin"
+    return {"deva": "hi", "beng": "bn", "taml": "ta"}.get(best, "en")
 
 
 # ---------- request parsing ----------
@@ -132,6 +169,21 @@ def question_from(body: bytes, content_type: str) -> tuple[str, float | None, st
     if not text:
         raise ValueError('send {"text": "..."} or a multipart body with an `audio` part')
     return text, None, "", ""
+
+
+def wants_speech(body: bytes, content_type: str, path: str) -> bool:
+    """?speak=1, or {"speak": true}. Off by default: every spoken answer is a vendor call
+    and a second of latency, and the API should not spend either without being asked."""
+    if "speak=1" in path or "speak=true" in path:
+        return True
+    if content_type.startswith("application/json"):
+        try:
+            return bool(json.loads(body or b"{}").get("speak"))
+        except ValueError:
+            return False
+    # the whole body, not the first 4 KB: FormData puts the audio part first and a clip is
+    # megabytes, so a windowed search would never see the flag that follows it
+    return b'name="speak"' in body
 
 
 # ---------- server ----------
@@ -193,6 +245,10 @@ class Handler(BaseHTTPRequestHandler):
                            parents=STATE["parents"], keep_hits=N_CITATIONS)
             payload = to_payload(trace, trace.meta.get("hits", []), STATE["texts"],
                                  stt_ms, provider)
+            if wants_speech(body, self.headers.get("Content-Type", ""), self.path):
+                voice = spoken(trace)
+                payload.update(voice)
+                payload["excluded_ms"]["tts"] = voice["tts_ms"]
         except Exception:
             traceback.print_exc()
             return self._send(500, {"error": "the serving path raised; see server log"})
@@ -251,6 +307,25 @@ def demo():
     # stt_ms is reported beside total_ms and never inside it
     p2 = to_payload(t, [], {}, 412.0, "sarvam:batch")
     assert p2["stt_ms"] == 412.0 and p2["total_ms"] < 100, (p2["stt_ms"], p2["total_ms"])
+
+    # the voice answers in the script the question was asked in
+    assert script_lang("what is a corporation") == "en"
+    assert script_lang("কর্পোরেশন কী") == "bn"
+    assert script_lang("சிறந்த நார்ச்சத்து") == "ta"
+    # the spoken string decides, not the question: a Bengali answer to a mostly-Latin
+    # code-switched question is still read by a Bengali voice
+    assert script_lang("কর্পোরেশন হল একটি সংস্থা") == "bn"
+    assert script_lang("I can't help with that request.") == "en", "refusals are English lines"
+
+    # speaking is opt-in: a vendor call and a second of latency are not a default
+    assert wants_speech(b'{"text":"x"}', "application/json", "/ask") is False
+    assert wants_speech(b'{"text":"x","speak":true}', "application/json", "/ask") is True
+    assert wants_speech(b'{}', "application/json", "/ask?speak=1") is True
+    assert wants_speech(b'not json', "application/json", "/ask") is False
+    big = b"--B\r\nContent-Disposition: form-data; name=\"audio\"\r\n\r\n" + b"\x00" * 9000 + \
+          b"\r\n--B\r\nContent-Disposition: form-data; name=\"speak\"\r\n\r\n1\r\n--B--\r\n"
+    assert wants_speech(big, "multipart/form-data; boundary=B", "/ask") is True, \
+        "the flag follows the audio part and must still be seen"
 
     q, ms, prov, _ = question_from(b'{"text": "  what is a corporation "}', "application/json")
     assert (q, ms, prov) == ("what is a corporation", None, ""), (q, ms, prov)
