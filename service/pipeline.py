@@ -288,7 +288,10 @@ def generate(ctx: Ctx, texts: dict, degraded=False):
     """
     n_ctx = 1
     cap = MAX_TOKENS_DEGRADED if degraded else MAX_TOKENS
-    dense = ctx.qvec is not None and not degraded    # degraded skips the encode, not the stage
+    # when the LLM is the primary generator the extractive answer is only the fallback, and
+    # spending 12 ms to make a fallback slightly better is 12 ms taken from the deadline the
+    # LLM has to beat. Lexical selection is free and is what the fallback needs to be.
+    dense = ctx.qvec is not None and not degraded and GENERATOR != "llm"
     best, best_score, best_cid = "", -1.0, None
     q = content(ctx.query)
     for cid, _, _ in ctx.hits[:n_ctx]:

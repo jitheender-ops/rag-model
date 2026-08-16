@@ -31,11 +31,15 @@ WHAT "HARNESSED" MEANS HERE, CONCRETELY
 """
 from __future__ import annotations
 
+import http.client
+import io
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from harness.env import load_dotenv
@@ -49,6 +53,7 @@ TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "30"))
 RETRIES = int(os.getenv("LLM_RETRIES", "1"))
 MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "120"))
 
+USER_AGENT = os.getenv("LLM_USER_AGENT", "mic-rag/1.0 (+https://github.com/)")
 INSUFFICIENT = "INSUFFICIENT"
 SYSTEM = (
     "You answer strictly from the numbered context passages given to you.\n"
@@ -80,6 +85,70 @@ KEY_ENV = {"sarvam": "SARVAM_API_KEY", "groq": "GROQ_API_KEY", "xai": "XAI_API_K
 
 class LLMError(RuntimeError):
     pass
+
+
+_LOCAL = threading.local()
+
+
+def _conn(host: str):
+    """One kept-alive HTTPS connection per thread.
+
+    The single most valuable measurement in this file. Groq from here: 48 ms of TCP+TLS
+    handshake on EVERY urllib call, and a 1-token completion costs the same as a 120-token
+    one -- so the price is per-call overhead, not generation, and reconnecting each time
+    pays it twice. Reusing the connection took P50 from 230 ms to 118 ms and moved an LLM
+    answer from "2.8x over the budget" to "inside it at P50".
+
+    Thread-local because the serving path calls from a pool, and http.client connections
+    are not safe to share.
+    """
+    conn = getattr(_LOCAL, "conn", None)
+    if conn is None or getattr(_LOCAL, "host", None) != host:
+        close_conn()
+        from stt.sarvam import _ctx
+        conn = http.client.HTTPSConnection(host, 443, context=_ctx(), timeout=TIMEOUT_S)
+        _LOCAL.conn, _LOCAL.host = conn, host
+    return conn
+
+
+def close_conn():
+    conn = getattr(_LOCAL, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    _LOCAL.conn, _LOCAL.host = None, None
+
+
+def post(url: str, body: bytes, headers: dict) -> dict:
+    """POST over the kept-alive connection, reconnecting once if it went stale.
+
+    An idle keep-alive connection is closed by the server whenever it likes, and that
+    arrives as a broken pipe on the NEXT request. One transparent reconnect is the whole
+    difference between keep-alive being a speed-up and being an intermittent failure."""
+    parts = urllib.parse.urlsplit(url)
+    path = parts.path + (f"?{parts.query}" if parts.query else "")
+    for attempt in (1, 2):
+        try:
+            conn = _conn(parts.hostname)
+            conn.request("POST", path, body=body, headers=headers)
+            resp = conn.getresponse()
+            raw = resp.read()
+            if resp.status >= 400:
+                raise urllib.error.HTTPError(url, resp.status, resp.reason, resp.headers,
+                                             io.BytesIO(raw))
+            return json.loads(raw)
+        except urllib.error.HTTPError:
+            # HTTPError subclasses OSError, so without this it would be caught below and
+            # reported as a connection failure -- turning a 429 the caller knows how to
+            # back off from into a retry loop that cannot help. The status is the message.
+            raise
+        except (http.client.HTTPException, ConnectionError, OSError) as e:
+            close_conn()                       # stale or broken: drop it and try once more
+            if attempt == 2:
+                raise LLMError(f"connection failed twice: {e!r}") from e
+    raise LLMError("unreachable")
 
 
 def config() -> tuple[str, str, str, str]:
@@ -131,16 +200,17 @@ def complete(query: str, passages: list[str], retries: int = RETRIES) -> dict:
     url, model, header, key = config()
     body = json.dumps({"model": model, "messages": prompt_for(query, passages),
                        "max_tokens": MAX_TOKENS, "temperature": 0}).encode()
-    from stt.sarvam import _ctx
     t0 = now_ns()
     last = None
     for attempt in range(1, retries + 2):
-        req = urllib.request.Request(url, data=body, method="POST")
-        req.add_header(header, key if header == "api-subscription-key" else f"Bearer {key}")
-        req.add_header("Content-Type", "application/json")
+        # Groq sits behind Cloudflare, which answers urllib's default fingerprint with
+        # "403 error code: 1010" -- a block that reads exactly like a rejected key. Sending
+        # a real User-Agent is the difference between a working provider and an hour spent
+        # regenerating credentials that were fine.
+        headers = {header: key if header == "api-subscription-key" else f"Bearer {key}",
+                   "Content-Type": "application/json", "User-Agent": USER_AGENT}
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT_S, context=_ctx()) as r:
-                payload = json.loads(r.read())
+            payload = post(url, body, headers)
             msg = (payload.get("choices") or [{}])[0].get("message", {}) or {}
             out = parse(msg.get("content"))
             out.update({"llm_ms": (now_ns() - t0) / NS_PER_MS, "attempts": attempt,
@@ -153,6 +223,10 @@ def complete(query: str, passages: list[str], retries: int = RETRIES) -> dict:
             return out
         except urllib.error.HTTPError as e:
             last = f"HTTP {e.code}: {e.read()[:200]!r}"
+            if e.code == 429:
+                # rate limited: the provider is up and the key is fine, and hammering it is
+                # the one response guaranteed not to work
+                last += "  (rate limited -- lower the request rate, not the timeout)"
             if e.code < 500 and e.code != 429:
                 break
         except Exception as e:
@@ -203,19 +277,23 @@ def probe(n: int = 5) -> dict:
               f"{(out['answer'] or '(refused)')[:52]!r}", flush=True)
     samples.sort()
     p50 = samples[len(samples) // 2]
+    p95 = samples[min(len(samples) - 1, int(0.95 * len(samples)))]
     p100 = samples[-1]
-    fits = p100 <= room
-    print(f"\n  {PROVIDER}/{model}: n={n}  P50 {p50:.0f} ms  P100 {p100:.0f} ms")
+    share = sum(1 for x in samples if x <= room) / len(samples)
+    print(f"\n  {PROVIDER}/{model}: n={n}  P50 {p50:.0f}  P95 {p95:.0f}  P100 {p100:.0f} ms")
     print(f"  room left in the {TOTAL_MS:.0f} ms budget after the rest of the path: "
           f"{room:.0f} ms")
-    print(f"  VERDICT: {'FITS' if fits else 'DOES NOT FIT'} "
-          f"({'every' if fits else 'the slowest'} call {'was under' if fits else 'was'} "
-          f"{p100:.0f} ms vs {room:.0f} ms of room)")
-    if not fits:
-        print(f"  -> {p100 / room:.1f}x over. Keep GENERATOR=extractive for the budget path; "
-              f"GENERATOR={PROVIDER and 'llm'} with a raised budget uses it deliberately.")
-    return {"provider": PROVIDER, "model": model, "p50": p50, "p100": p100,
-            "room_ms": room, "fits": fits, "n": n, "answered": answers}
+    # a yes/no on P100 is the wrong shape for a system that degrades: what matters is how
+    # often the model makes it, because the rest is served by the extractive fallback and
+    # the deadline is never missed either way.
+    print(f"  {share:.0%} of calls fit inside that room; the rest fall back to extractive")
+    verdict = ("FITS -- every call" if p100 <= room else
+               f"FITS AT P50, NOT AT P100 -- {share:.0%} of answers are the model's"
+               if p50 <= room else f"DOES NOT FIT -- {p50 / room:.1f}x over at P50")
+    print(f"  VERDICT: {verdict}")
+    return {"provider": PROVIDER, "model": model, "p50": p50, "p95": p95, "p100": p100,
+            "room_ms": room, "fits_p100": p100 <= room, "fits_p50": p50 <= room,
+            "share_within": share, "n": n, "answered": answers}
 
 
 def demo():
@@ -239,6 +317,14 @@ def demo():
     for empty in ("", None, "   "):
         e = parse(empty)
         assert e["answer"] == "" and not e["grounded"] and e["parsed"] == "empty", e
+
+    # an HTTPError must survive post()'s connection handling: it subclasses OSError, and
+    # swallowing it turns "you are rate limited" into "the network broke"
+    import inspect
+    src = inspect.getsource(post)
+    assert "except urllib.error.HTTPError" in src and \
+        src.index("except urllib.error.HTTPError") < src.index("except (http.client"), \
+        "HTTPError must be re-raised BEFORE the OSError catch, or 429s are mislabelled"
 
     assert set(PROVIDERS) >= {"sarvam", "groq", "xai", "openai"}
     assert set(KEY_ENV) == set(PROVIDERS), "every provider needs a named key variable"

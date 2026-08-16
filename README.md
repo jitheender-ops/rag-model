@@ -156,47 +156,55 @@ To regenerate every table instead of asking one question: `make submit` (~30 min
 
 ### The one place the brief and the measurements disagree
 
-The brief puts *answer generation* inside the 200 ms budget. Measured on this account:
+The brief puts *answer generation* inside the 200 ms budget. Four providers are wired behind
+one interface and `make llm-probe` answers it with a measurement rather than an opinion --
+it subtracts what the rest of the path already spends and compares against the room actually
+left:
 
 ```
-sarvam-105b-conversations      507 - 2394 ms     the fastest LLM path available here
-sarvam-105b (reasoning)       4700 - 5000 ms
-the whole retrieval->answer path       20 ms     P50, extractive
+                                   P50      P100     room     verdict
+groq / llama-3.1-8b-instant      161 ms   309 ms   178 ms   fits at P50, not at P100
+sarvam-105b-conversations       2126 ms  3334 ms   178 ms   18.7x over
+sarvam-105b (reasoning)         4878 ms            178 ms   spends its tokens on reasoning
+the extractive path                20 ms    36 ms   200 ms   PASS, 1500/1500
 ```
 
-**The fastest observed LLM call is 2.5x the entire budget.** That is not a tuning margin, so
-this system ships the extractive generator inside the window and treats the LLM as a
-measured upgrade rather than pretending both are possible at once:
+Groq is the interesting row, and getting it there was engineering rather than luck. `urllib`
+opens a fresh TLS connection per call: **48 ms of handshake on every request**, and a
+1-token completion costs the same as a 120-token one, so the price is per-call overhead
+rather than generation. Reusing one kept-alive connection per thread took P50 from **230 ms
+to 118 ms** on a short context -- from 2.8x over the budget to inside it.
+
+And then the honest part. Run through the *real* pipeline, on real multilingual passages,
+at the standard budget:
+
+```
+budget    served by the LLM    end-to-end P50    over budget
+200 ms         0 / 30                173 ms         0 / 30
+400 ms         3 / 30                374 ms         0 / 30
+```
+
+The floor is not the whole story: three retrieved MS MARCO passages are 800-1500 characters
+and Indic scripts cost more tokens per character, which pushes a 154 ms call to 384 ms. So
+**at 200 ms the LLM path serves nothing and the extractive fallback carries every request**
+-- and the budget is still never missed, because the deadline is enforced rather than hoped
+for. That is the system working as designed, and it is why `GENERATOR=extractive` is the
+default and this table is in the README instead of a footnote.
+
+An LLM becomes viable here somewhere north of 500 ms. If the 200 ms target is firm, the
+answer is extractive; if generation is firm, the target is not 200 ms. Both paths are
+harnessed identically, so the choice is an env var and a re-measure:
 
 ```bash
-make demo                                        # extractive, 20 ms, inside the budget
-GENERATOR=llm python service/ask.py --budget 4000 "what is a corporation"
+make demo                                                       # extractive, 20 ms
+GENERATOR=llm LLM_PROVIDER=groq python service/ask.py --budget 4000 "what is a corporation"
 ```
-
-Whether *any* generator fits is a measurement, not an opinion, so it has a command:
-
-```bash
-make llm-probe                          # the configured provider
-LLM_PROVIDER=groq make llm-probe        # Groq, needs GROQ_API_KEY in .env
-LLM_PROVIDER=xai  make llm-probe        # xAI Grok, needs XAI_API_KEY
-```
-
-It subtracts what the rest of the path already spends (~22 ms) and compares the slowest
-call against what is actually left, then says FITS or DOES NOT FIT and by what factor.
-Sarvam: **18.7x over**. Four providers are wired behind one interface -- sarvam, groq, xai,
-openai -- so swapping is an env var and re-running the probe, not a rewrite.
-
-Both paths are harnessed identically. With `GENERATOR=llm` and a 200 ms budget the request
-logs `llm_deadline` and serves the extractive answer — the deadline wins, every time, by
-construction. The extractive answer is computed first and kept, so a timeout, a 5xx, junk
-JSON or a dead vendor all land on an answer we already had.
 
 Measured on 60 held-out queries with human answers, the LLM **cites the correct passage more
-often (45% vs 40%)** but scores *lower* token F1 — worth stating plainly: F1 against a short
+often (45% vs 40%)** but scores *lower* token F1 -- worth stating plainly: F1 against a short
 human answer structurally favours extraction, because the human answer and the extracted
-sentence are drawn from the same passage vocabulary. It is the wrong metric for a
-paraphrase, and it is the metric this repo has, so it is reported with that caveat rather
-than quietly dropped.
+sentence are drawn from the same passage vocabulary. It is the wrong metric for a paraphrase,
+and it is the metric this repo has, so it is reported with the caveat rather than dropped.
 
 ## The shared spine
 
