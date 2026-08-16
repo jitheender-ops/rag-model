@@ -1,0 +1,16 @@
+artifacts/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+# working copies of previous runs, kept on disk to compare against. The committed state is
+# whichever corpus data/frozen.json binds the query sets to; the rest is history, not source.
+.backup-*/
+# the ingest cache: 39 MB, and `make corpus` regenerates it. What must be committed is
+# data/corpus.jsonl (the frozen subset the query sets are bound to by sha), not its source.
+data/raw/
+# downloaded MSMARCO-XI shards: gigabytes each, and `make corpus` fetches them on demand
+data/shards/
+# the clips are yours and are not committed; the note saying what to record is
+data/audio/*
+!data/audio/README.md
