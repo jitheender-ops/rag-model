@@ -85,6 +85,12 @@ BM25_WEIGHT = float(os.getenv("BM25_WEIGHT", "0.1"))
 # harmful one, so it is off by default. RERANK=lexical restores it; a real cross-encoder
 # replaces the body and the stage keeps its budget, its ladder rung and its latency row.
 RERANK = os.getenv("RERANK", "off")
+# extractive by default, and the reason is measured rather than preferred: the fastest LLM
+# call observed on this account is 507 ms against a 200 ms budget for the whole path, so an
+# LLM in the serving path misses the deadline by a factor, not by a margin. GENERATOR=llm
+# turns it on for anyone willing to raise the budget; see service/llm.py for the numbers.
+GENERATOR = os.getenv("GENERATOR", "extractive")
+LLM_CTX = int(os.getenv("LLM_CTX", "3"))        # passages handed to the model
 
 # gate 1. Harm verbs are matched near their object rather than as bare words, so
 # "kill" in "killed by rainfall" does not trip the gate.
@@ -117,6 +123,7 @@ class Ctx:
     extractive: bool = False
     cache_hit: bool = False
     cited: str | None = None
+    generator: str = "extractive"   # which path produced ctx.answer, for the trace
     qvec: object | None = None      # kept for generate(): the encode is already paid for
     lexical_only: bool = False      # the encoder missed its deadline; BM25 carries this one
 
@@ -314,7 +321,45 @@ def generate(ctx: Ctx, texts: dict, degraded=False):
     ctx.answer = " ".join(best.split()[:cap])
     ctx.extractive = True
     ctx.cited = best_cid
-    return best_cid
+    if GENERATOR == "llm" and best_cid:
+        upgrade_with_llm(ctx, texts, cap)
+    return ctx.cited
+
+
+def upgrade_with_llm(ctx: Ctx, texts: dict, cap: int) -> None:
+    """Replace the extracted sentence with a generated one, if the budget allows.
+
+    The extractive answer is computed first and kept as the fallback, so the LLM is an
+    upgrade that can fail rather than a dependency that can break the request: a timeout, a
+    5xx, junk JSON and a dead vendor all land in the same place, which is the answer we
+    already had.
+
+    An LLM that says INSUFFICIENT is gate 4 speaking with better judgment than a lexical
+    overlap, so its refusal is honoured as an abstention. That is the point of putting a
+    model in the loop -- not fluency, but knowing when the passages do not answer.
+    """
+    from service import llm
+    left = ctx.budget.remaining() if ctx.budget else TOTAL_MS
+    deadline = max(5.0, left - GENERATE_RESERVE_MS)
+    passages = [display(texts.get(cid, "")) for cid, _, _ in ctx.hits[:LLM_CTX]]
+    out = llm.answer_within(ctx.query, passages, deadline)
+    if out is None:
+        ctx.trace.event("llm_deadline", waited_ms=round(deadline, 1))
+        if ctx.budget is not None:
+            ctx.budget.degradations.append("generate")
+        return
+    ctx.trace.event("llm_answer", ms=round(out.get("llm_ms", 0.0), 1),
+                    parsed=out.get("parsed"), grounded=out.get("grounded"))
+    if not out["grounded"]:
+        ctx.abstain, ctx.gate = True, "gate4_llm"
+        ctx.reason = "the model reported the passages do not answer this"
+        ctx.answer = ""
+        return
+    ctx.answer = " ".join(out["answer"].split()[:cap])
+    ctx.generator = f"llm:{out.get('model', '?')}"
+    n = out.get("passage")
+    if isinstance(n, int) and 1 <= n <= len(ctx.hits):      # cite what the model says it used
+        ctx.cited = ctx.hits[n - 1][0]
 
 
 def covers(terms: set[str], text: str) -> float:
@@ -421,6 +466,7 @@ def answer(query: str, index: Index, texts: dict, qid: str = "q",
                               for cid, score, _ in ctx.hits[:keep_hits]]
     trace.meta.update({"abstain": ctx.abstain, "gate": ctx.gate, "reason": ctx.reason,
                        "cited": ctx.cited, "lexical_only": ctx.lexical_only,
+                       "generator": ctx.generator,
                        "answer": ctx.answer, "extractive": ctx.extractive,
                        "cache_hit": ctx.cache_hit, "n_tokens": len(ctx.answer.split()),
                        "budget": budget.report(),

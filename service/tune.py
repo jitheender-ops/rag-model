@@ -107,12 +107,34 @@ def pick_whole_top_chunk(ctx, texts, qvec, P, n_ctx=1, cap=96):
     return " ".join(P.sanitize(P.display(texts.get(cid, ""))).split()[:cap]), cid
 
 
+def pick_llm(ctx, texts, qvec, P, n_ctx=3, cap=96):
+    """The harnessed LLM, given the same top chunks the extractive path sees.
+
+    Scored on the same queries and the same metric as everything else, because "an LLM will
+    obviously be better" is the kind of claim this harness exists to check rather than
+    repeat. A call that fails or times out scores as the empty answer it produced -- that is
+    what a user would have got."""
+    from service import llm
+    cands = [(cid, P.display(texts.get(cid, ""))) for cid, _, _ in ctx.hits[:n_ctx]]
+    if not cands:
+        return "", None
+    try:
+        out = llm.complete(ctx.query, [t for _, t in cands])
+    except Exception:
+        return "", cands[0][0]
+    n = out.get("passage")
+    cid = cands[n - 1][0] if isinstance(n, int) and 1 <= n <= len(cands) else cands[0][0]
+    return " ".join((out.get("answer") or "").split()[:cap]), cid
+
+
 VARIANTS = {
     "lexical sentence (shipped)": pick_lexical,
     "dense sentence, top 4": pick_dense,
     "dense sentence, top 1": pick_top_chunk_dense,
     "whole top chunk": pick_whole_top_chunk,
 }
+if os.getenv("WITH_LLM"):          # opt-in: each row is a paid API call per query
+    VARIANTS["llm (harnessed)"] = pick_llm
 
 
 def run(variant, queries, ix, texts, parents) -> dict:

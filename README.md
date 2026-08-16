@@ -143,6 +143,48 @@ nothing. `STT_PROVIDER=mock make serve` exercises the whole audio path offline.
 To regenerate every table instead of asking one question: `make submit` (~30 min), or
 `make check` for the 21 self-checks, which need no model and no network.
 
+## Against the brief
+
+| # | requirement | where it is, and the number |
+|---|---|---|
+| 1 | **Speech-to-text: Sarvam or ElevenLabs** | Sarvam (`stt/sarvam.py`), batch + streaming. Live on real clips: **520.7 / 856.5 / 856.5 ms** P50/P95/P100 over 6 recordings, all four languages transcribed correctly |
+| 2 | **Chunking must be vast** | **eight** strategies compared on one corpus, one embedder, one set of index params (`d1/`): fixed 256/64, recursive 320/80, sentence-window, semantic-drift, proposition, parent-document, metadata-filtered, multi-granularity. Scored at passage granularity against **human `is_selected` qrels**, winner **s7 at 0.892 recall@50** |
+| 3 | **Under 200 ms** | **PASS, 1500/1500 requests**, across warm, cold and concurrency-4. P50 **20.2 ms**, slowest single request **180 ms**. Not a claim: `harness/budget.py` refuses to enter a stage that cannot finish |
+| 4 | **P50 / P70 / P100 across many queries** | `reports/latency.md`, **500 frozen queries x 3 modes**, per stage and end to end, nearest-rank, never a single best-case run |
+| 5 | **Harness, not a raw prompt** | six timed stages under one budget object, a degradation ladder, bounded deadlines on every unbounded call, retries only where retrying is affordable, structured JSON in and out (`service/server.py`), and `service/llm.py` — structured output, parse-or-fallback, bounded retries, deadline, error recovery |
+| 6 | **Guardrails** | four gates, graded on **280 labelled queries** (`reports/guardrails.md`): correct abstention **78%**, false abstention **3.1%** against a <8% target, injection resistance **100%**, plus a confusion matrix and per-gate attribution |
+
+### The one place the brief and the measurements disagree
+
+The brief puts *answer generation* inside the 200 ms budget. Measured on this account:
+
+```
+sarvam-105b-conversations      507 - 2394 ms     the fastest LLM path available here
+sarvam-105b (reasoning)       4700 - 5000 ms
+the whole retrieval->answer path       20 ms     P50, extractive
+```
+
+**The fastest observed LLM call is 2.5x the entire budget.** That is not a tuning margin, so
+this system ships the extractive generator inside the window and treats the LLM as a
+measured upgrade rather than pretending both are possible at once:
+
+```bash
+make demo                                        # extractive, 20 ms, inside the budget
+GENERATOR=llm python service/ask.py --budget 4000 "what is a corporation"
+```
+
+Both paths are harnessed identically. With `GENERATOR=llm` and a 200 ms budget the request
+logs `llm_deadline` and serves the extractive answer — the deadline wins, every time, by
+construction. The extractive answer is computed first and kept, so a timeout, a 5xx, junk
+JSON or a dead vendor all land on an answer we already had.
+
+Measured on 60 held-out queries with human answers, the LLM **cites the correct passage more
+often (45% vs 40%)** but scores *lower* token F1 — worth stating plainly: F1 against a short
+human answer structurally favours extraction, because the human answer and the extracted
+sentence are drawn from the same passage vocabulary. It is the wrong metric for a
+paraphrase, and it is the metric this repo has, so it is reported with that caveat rather
+than quietly dropped.
+
 ## The shared spine
 
 | | |
@@ -163,6 +205,7 @@ d1/                   corpus freeze, 8 chunkers, one index, one eval loop
 service/pipeline.py   the serving path: 6 timed stages, 4 gates, budget-enforced
 service/calibrate.py  gates 2 and 4's floors, each fitted on a set that does not grade it
 service/tune.py       answer F1 vs the human answers, paired and bootstrapped
+service/llm.py        generation, harnessed: structured output, retries, deadline, fallback
 service/ask.py        `make demo`: one question end to end, spans and gates printed
 service/server.py     `make serve`: the page and POST /ask on one origin, stdlib http
 stt/sarvam.py         Sarvam batch + streaming; where t0 comes from, and where retries live

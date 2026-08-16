@@ -78,6 +78,7 @@ check:
 	$(PY) service/server.py --selfcheck
 	$(PY) service/calibrate.py --selfcheck
 	$(PY) service/tune.py --selfcheck
+	$(PY) service/llm.py --selfcheck
 	$(PY) d1/ingest.py --selfcheck
 	$(PY) stt/sarvam.py
 	$(PY) stt/measure.py --selfcheck

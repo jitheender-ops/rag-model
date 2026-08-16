@@ -120,6 +120,8 @@ def main():
                                     "or STT_PROVIDER=mock to exercise the path offline)")
     ap.add_argument("--nth", type=int, default=0, help="which frozen query, when none is given")
     ap.add_argument("--json", action="store_true", help="print the whole trace as JSON")
+    ap.add_argument("--budget", type=float, default=None,
+                    help="override the 200 ms budget, e.g. --budget 3000 with GENERATOR=llm")
     ap.add_argument("--speak", action="store_true",
                     help="say the answer out loud (Sarvam TTS; after t1, outside the budget)")
     args = ap.parse_args()
@@ -139,7 +141,9 @@ def main():
         query = " ".join(args.query) or sample_query(args.nth)
 
     ix, texts, parents = load_index(strategy)          # model load happens here, before t0
-    trace = answer(query, ix, texts, qid="ask", parents=parents)
+    from harness.budget import TOTAL_MS as _T
+    trace = answer(query, ix, texts, qid="ask", parents=parents,
+                   budget_ms=args.budget if args.budget else _T)
     voice = say_it(trace) if args.speak else None
     if args.json:
         row = trace.row()
