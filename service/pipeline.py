@@ -322,7 +322,7 @@ def display(text: str) -> str:
 
 def answer(query: str, index: Index, texts: dict, qid: str = "q",
            budget_ms: float = TOTAL_MS, cache: dict | None = None,
-           parents: dict | None = None) -> Trace:
+           parents: dict | None = None, keep_hits: int = 0) -> Trace:
     """parents maps passage id -> full passage text: S3/S6-style window expansion, used by
     gate 4 so a chunk is verified against the passage it came from rather than against its
     own 40 words (the entity is often in the neighbouring chunk)."""
@@ -346,6 +346,11 @@ def answer(query: str, index: Index, texts: dict, qid: str = "q",
                     if not ctx.abstain and cache is not None:
                         cache[" ".join(sorted(content(query)))] = (ctx.answer, False, None)
 
+    if keep_hits:
+        # opt-in: the HTTP API returns citations, but D3 writes one trace per line to JSONL
+        # and 500 requests x N hit ids is log weight nobody asked for.
+        trace.meta["hits"] = [(cid, round(float(score), 4))
+                              for cid, score, _ in ctx.hits[:keep_hits]]
     trace.meta.update({"abstain": ctx.abstain, "gate": ctx.gate, "reason": ctx.reason,
                        "cited": ctx.cited, "lexical_only": ctx.lexical_only,
                        "answer": ctx.answer, "extractive": ctx.extractive,

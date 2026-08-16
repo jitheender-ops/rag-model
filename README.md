@@ -12,6 +12,7 @@ make calibrate    # gate 2 + gate 4 floors, measured on held-out sets -> data/sc
 make guardrails   # D4 -> reports/guardrails.md
 make latency      # D3 -> reports/latency.md + latency.svg
 make demo         # ask one question through the serving path, with its spans
+make serve        # the browser demo: mic in, answer + timings out, on localhost:8000
 make stt          # the excluded legs: real Sarvam round trips (needs SARVAM_API_KEY)
 make submit       # chunking -> calibrate -> guardrails -> latency, then splices the tables here
 ```
@@ -93,8 +94,39 @@ typically 300 ms–1.5 s, so the honest headline is "retrieval to grounded answe
 200 ms", and anyone who asks about the full mic-to-speaker path should be told the STT number
 beside it. That is why the two are never summed into one figure without a label.
 
+### The browser demo
+
+```bash
+make serve            # http://localhost:8000  (make serve PORT=9000 to move it)
+```
+
+Open the page, hold the button, speak. The page and the API are served from **one origin**,
+so the endpoint wires itself — there is nothing to paste into the config box, and no CORS
+to get wrong. Opened as a `file://` instead, the page falls back to its own demo mode with
+synthetic timings, clearly badged, so a dead backend never kills a live demo.
+
+```
+GET  /             the page
+GET  /health       which index is loaded, and both calibrated floors
+POST /ask          {"text": "..."}   or multipart with an `audio` part
+```
+
+The response is the contract the page itself documents: `transcript`, `answer`,
+`abstained`, `abstain_gate`, `citations[]`, `timings_ms`, `total_ms`, `stt_ms`, `degraded`.
+Two deliberate choices in it:
+
+- **the index and the encoder load before the socket opens.** A first request that pays a
+  10 s model load is not a request the 200 ms budget describes, and a server that loads
+  lazily publishes that lie to whoever tries it first;
+- **`stt_ms` sits beside `total_ms` and is never folded into it** — and for the mock STT the
+  combined figure is not emitted at all, because a 0 ms leg added to a measured window is
+  fiction, and fiction is what gets quoted.
+
+Speaking needs `SARVAM_API_KEY` in the server's environment; typing into the box needs
+nothing. `STT_PROVIDER=mock make serve` exercises the whole audio path offline.
+
 To regenerate every table instead of asking one question: `make submit` (~30 min), or
-`make check` for the 19 self-checks, which need no model and no network.
+`make check` for the 20 self-checks, which need no model and no network.
 
 ## The shared spine
 
@@ -116,6 +148,7 @@ d1/                   corpus freeze, 8 chunkers, one index, one eval loop
 service/pipeline.py   the serving path: 6 timed stages, 4 gates, budget-enforced
 service/calibrate.py  gates 2 and 4's floors, each fitted on a set that does not grade it
 service/ask.py        `make demo`: one question end to end, spans and gates printed
+service/server.py     `make serve`: the page and POST /ask on one origin, stdlib http
 stt/sarvam.py         Sarvam batch + streaming; where t0 comes from, and where retries live
 stt/measure.py        the excluded legs, measured -> data/excluded_legs.json
 d3/                   replay 500 frozen queries, reduce the trace log late

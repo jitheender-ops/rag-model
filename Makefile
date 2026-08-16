@@ -6,8 +6,9 @@ QUERIES ?= 1200
 ROWS ?= 1250
 LANGS ?= hi,ta,bn
 CLIPS ?= data/audio
+PORT ?= 8000
 
-.PHONY: all corpus chunking calibrate latency guardrails demo stt submit check venv clean
+.PHONY: all corpus chunking calibrate latency guardrails demo serve stt submit check venv clean
 
 all: submit
 
@@ -37,6 +38,10 @@ guardrails:
 demo:
 	$(PY) service/ask.py $(if $(AUDIO),--audio $(AUDIO),) $(Q)
 
+## the browser demo: page and API on one origin, index loaded before the socket opens
+serve:
+	PORT=$(PORT) $(PY) service/server.py
+
 ## the excluded legs: real Sarvam round trips over CLIPS, published beside the budget
 stt:
 	CLIPS=$(CLIPS) $(PY) stt/measure.py
@@ -64,6 +69,7 @@ check:
 	$(PY) d4/run.py --selfcheck
 	$(PY) service/pipeline.py
 	$(PY) service/ask.py --selfcheck
+	$(PY) service/server.py --selfcheck
 	$(PY) service/calibrate.py --selfcheck
 	$(PY) d1/ingest.py --selfcheck
 	$(PY) stt/sarvam.py
