@@ -159,8 +159,9 @@ def question_from(body: bytes, content_type: str) -> tuple[str, float | None, st
         if not audio:
             raise ValueError("multipart body has no `audio` part")
         from stt import sarvam
-        name = "clip.webm"
-        t = sarvam.provider().transcribe(audio, filename=name, content_type="audio/webm")
+        mime = sarvam.content_type_of(audio, "clip.webm")
+        name = f"clip.{sarvam.ext_for(mime)}"
+        t = sarvam.provider().transcribe(audio, filename=name, content_type=mime)
         if not t["text"].strip():
             raise ValueError("the clip transcribed to nothing -- no question to ask")
         return t["text"], t["stt_ms"], t["provider"], name

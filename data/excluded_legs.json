@@ -1,7 +1,15 @@
 {
-  "tts_p50": 679.7,
-  "tts_p95": 947.9,
-  "tts_p100": 947.9,
+  "stt_p50": 520.7,
+  "stt_p95": 856.5,
+  "stt_p100": 856.5,
+  "stt_n": 6,
+  "provider": "sarvam:batch",
+  "model": "saaras:v3",
+  "clips": 6,
+  "retries_used": 0,
+  "tts_p50": 793.2,
+  "tts_p95": 1049.2,
+  "tts_p100": 1049.2,
   "tts_n": 4,
   "tts_provider": "sarvam:bulbul:v2",
   "note": "both legs measured outside the 200 ms budget and published beside it: STT before t0, TTS after t1"

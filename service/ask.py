@@ -46,10 +46,9 @@ def transcribe(path: str) -> tuple[str, float, str]:
     from stt import sarvam
     with open(path, "rb") as fh:
         audio = fh.read()
-    ext = path.rsplit(".", 1)[-1].lower()
+    mime = sarvam.content_type_of(audio, path)
     t = sarvam.provider().transcribe(
-        audio, filename=os.path.basename(path),
-        content_type={"wav": "audio/wav", "mp3": "audio/mpeg"}.get(ext, "audio/webm"))
+        audio, filename=f"{os.path.basename(path)}.{sarvam.ext_for(mime)}", content_type=mime)
     return t["text"], t["stt_ms"], t["provider"]
 
 

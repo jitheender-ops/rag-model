@@ -115,11 +115,13 @@ def main():
 
     samples, attempts = [], 0
     for p in paths:
-        ext = p.rsplit(".", 1)[-1].lower()
         with open(p, "rb") as fh:
             audio = fh.read()
-        t = sarvam.transcribe(audio, filename=os.path.basename(p),
-                              content_type=MIME.get(ext, "application/octet-stream"))
+        mime = sarvam.content_type_of(audio, p)
+        # send it under the name its bytes deserve: a .wav holding MP3 is common, and the
+        # vendor rejects the mismatch with a message about the audio rather than the label
+        t = sarvam.transcribe(audio, filename=f"{os.path.basename(p)}.{sarvam.ext_for(mime)}",
+                              content_type=mime)
         samples.append(t["stt_ms"])
         attempts += t["attempts"]
         print(f"  {os.path.basename(p):28.28s} {t['stt_ms']:7.1f} ms  [{t['language']}]  "

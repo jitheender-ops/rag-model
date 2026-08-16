@@ -75,6 +75,36 @@ def _ctx():
     return _SSL
 
 
+# magic bytes -> mime. The extension is a claim; the first bytes are the fact, and the two
+# disagree constantly: phone recorders and voice-memo exports happily write MP3 into a .wav
+# name, and the vendor answers a mislabelled upload with "please check the audio format",
+# which reads like the recording is broken rather than misnamed.
+MAGIC = (
+    (b"RIFF", "audio/wav"), (b"OggS", "audio/ogg"), (b"fLaC", "audio/flac"),
+    (b"ID3", "audio/mpeg"), (b"\x1a\x45\xdf\xa3", "audio/webm"),
+)
+
+
+def content_type_of(audio: bytes, filename: str = "") -> str:
+    """What this actually is, falling back to the extension only when the bytes are mute."""
+    head = audio[:16]
+    for sig, mime in MAGIC:
+        if head.startswith(sig):
+            return mime
+    if len(head) > 1 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0:
+        return "audio/mpeg"                     # bare MPEG frame sync, no ID3 tag
+    if head[4:8] == b"ftyp":
+        return "audio/mp4"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return {"wav": "audio/wav", "mp3": "audio/mpeg", "m4a": "audio/mp4", "webm": "audio/webm",
+            "ogg": "audio/ogg", "flac": "audio/flac"}.get(ext, "application/octet-stream")
+
+
+def ext_for(mime: str) -> str:
+    return {"audio/wav": "wav", "audio/mpeg": "mp3", "audio/mp4": "m4a",
+            "audio/webm": "webm", "audio/ogg": "ogg", "audio/flac": "flac"}.get(mime, "bin")
+
+
 class Transcript(dict):
     """{text, language, stt_ms, attempts, provider}. A dict so it serialises straight
     into the trace log."""
@@ -227,6 +257,15 @@ def demo():
     assert b'name="model"' in body and b"RIFFdata" in body
     assert ctype.startswith("multipart/form-data; boundary=")
     assert body.rstrip().endswith(b"--")
+
+    # the bytes decide, not the name: an MP3 called .wav must be sent as audio/mpeg
+    assert content_type_of(b"RIFF\x00\x00\x00\x00WAVE", "x.mp3") == "audio/wav"
+    assert content_type_of(b"ID3\x03\x00lots of tag", "x.wav") == "audio/mpeg"
+    assert content_type_of(b"\xff\xfb\x90\x00frame", "x.wav") == "audio/mpeg"
+    assert content_type_of(b"\x1a\x45\xdf\xa3seg", "x.bin") == "audio/webm"
+    assert content_type_of(b"\x00\x00\x00 ftypM4A ", "x.bin") == "audio/mp4"
+    assert content_type_of(b"", "x.flac") == "audio/flac", "mute bytes fall back to the name"
+    assert content_type_of(b"", "x") == "application/octet-stream"
 
     t = MockSTT.transcribe(b"", text="कॉर्पोरेशन क्या है")
     assert t["text"] == "कॉर्पोरेशन क्या है" and t["provider"] == "mock"

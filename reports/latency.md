@@ -5,8 +5,8 @@
 | machine | arm64 / 10 vCPU |
 | region | local |
 | provider | Darwin |
-| date | 2026-08-16 11:27 IST |
-| commit | 4035141 |
+| date | 2026-08-16 11:34 IST |
+| commit | 400326c |
 | embedder | intfloat/multilingual-e5-small / 384d |
 | python | 3.13.7 |
 | seed | 42 |
@@ -27,7 +27,7 @@
   t1 = last answer token flushed to the socket, after the grounding verdict
 ```
 
-excluded legs (P50 / P95 / P100, ms): STT _ / _ / _    TTS 679.7    client RTT _    (`_` = no such stage in this repo, or not measured)
+excluded legs (P50 / P95 / P100, ms): STT 520.7 / 856.5 / 856.5 over 6 clips via sarvam:batch    TTS 793.2    client RTT _    (`_` = no such stage in this repo, or not measured)
 
 
 ## Table shape - warm, n = 500
