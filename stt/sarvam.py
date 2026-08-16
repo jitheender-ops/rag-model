@@ -30,7 +30,10 @@ import urllib.error
 import urllib.request
 import uuid
 
+from harness.env import load_dotenv
 from harness.spans import NS_PER_MS, now_ns
+
+load_dotenv()          # a key in .env counts as set, so nothing needs exporting
 
 API_KEY = os.getenv("SARVAM_API_KEY", "")
 BATCH_URL = "https://api.sarvam.ai/speech-to-text"

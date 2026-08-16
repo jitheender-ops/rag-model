@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+# keys live here and nowhere else in the tree
+.env
 # working copies of previous runs, kept on disk to compare against. The committed state is
 # whichever corpus data/frozen.json binds the query sets to; the rest is history, not source.
 .backup-*/
