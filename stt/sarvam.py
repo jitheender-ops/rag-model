@@ -48,6 +48,33 @@ class STTError(RuntimeError):
     pass
 
 
+def ssl_context():
+    """A context that can actually verify api.sarvam.ai.
+
+    macOS python.org and uv-built interpreters ship no CA bundle -- ssl's default cafile is
+    None -- so urllib fails every HTTPS request with CERTIFICATE_VERIFY_FAILED and it reads
+    like the vendor is down. certifi is already here (sentence-transformers depends on it);
+    when it is not, fall back to the system default rather than to no verification, because
+    an STT client that silently stops checking certificates is a worse bug than a broken one.
+    """
+    import ssl
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
+_SSL = None
+
+
+def _ctx():
+    global _SSL
+    if _SSL is None:
+        _SSL = ssl_context()
+    return _SSL
+
+
 class Transcript(dict):
     """{text, language, stt_ms, attempts, provider}. A dict so it serialises straight
     into the trace log."""
@@ -82,7 +109,7 @@ def transcribe(audio: bytes, filename: str = "audio.webm",
         req.add_header("api-subscription-key", API_KEY)
         req.add_header("Content-Type", ctype)
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:
+            with urllib.request.urlopen(req, timeout=TIMEOUT_S, context=_ctx()) as r:
                 payload = json.loads(r.read())
             return Transcript(text=payload.get("transcript", "").strip(),
                               language=payload.get("language_code", language),
@@ -95,6 +122,15 @@ def transcribe(audio: bytes, filename: str = "audio.webm",
                 break
         except Exception as e:                       # timeout, DNS, reset -- worth a retry
             last = repr(e)
+            if "CERTIFICATE_VERIFY_FAILED" in last:
+                # not transient: three identical failures and a 0.75 s backoff teach nobody
+                # anything, and the message that matters is the one about the CA bundle
+                raise STTError(
+                    "TLS verification failed against the Sarvam API. This interpreter has no "
+                    "CA bundle (ssl's default cafile is None, which is normal for macOS "
+                    "python.org and uv builds). `uv pip install --python .venv/bin/python "
+                    "certifi` fixes it; sarvam.ssl_context() picks it up automatically."
+                ) from e
         if attempt <= retries:
             time.sleep(0.25 * attempt)               # linear backoff, bounded
     raise STTError(f"sarvam batch failed after {attempt} attempt(s): {last}")
