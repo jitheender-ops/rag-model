@@ -60,14 +60,22 @@ SYSTEM = (
     'Reply with JSON only: {"answer": "...", "passage": <number of the passage used>}'
 )
 
+# "grok" is two different products and the brief did not say which, so both are wired and
+# whichever key exists decides:
+#   groq  Groq's inference service -- the reason to try it is speed, which is the only open
+#         question about putting a generator inside a 200 ms budget
+#   xai   xAI's Grok models
 PROVIDERS = {
     # provider -> (url, default model, auth header)
     "sarvam": ("https://api.sarvam.ai/v1/chat/completions", "sarvam-105b-conversations",
                "api-subscription-key"),
-    "groq": ("https://api.groq.com/openai/v1/chat/completions", "llama-3.3-70b-versatile",
+    "groq": ("https://api.groq.com/openai/v1/chat/completions", "llama-3.1-8b-instant",
              "Authorization"),
+    "xai": ("https://api.x.ai/v1/chat/completions", "grok-3-mini", "Authorization"),
     "openai": ("https://api.openai.com/v1/chat/completions", "gpt-4o-mini", "Authorization"),
 }
+KEY_ENV = {"sarvam": "SARVAM_API_KEY", "groq": "GROQ_API_KEY", "xai": "XAI_API_KEY",
+           "openai": "OPENAI_API_KEY"}
 
 
 class LLMError(RuntimeError):
@@ -79,10 +87,9 @@ def config() -> tuple[str, str, str, str]:
     if PROVIDER not in PROVIDERS:
         raise LLMError(f"unknown LLM_PROVIDER {PROVIDER!r}; try {', '.join(PROVIDERS)}")
     url, default_model, header = PROVIDERS[PROVIDER]
-    key = os.getenv({"sarvam": "SARVAM_API_KEY", "groq": "GROQ_API_KEY",
-                     "openai": "OPENAI_API_KEY"}[PROVIDER], "")
+    key = os.getenv(KEY_ENV[PROVIDER], "")
     if not key:
-        raise LLMError(f"no API key for {PROVIDER} -- put it in .env")
+        raise LLMError(f"no API key for {PROVIDER} -- put {KEY_ENV[PROVIDER]}=... in .env")
     return url, MODEL or default_model, header, key
 
 
@@ -173,6 +180,44 @@ def answer_within(query: str, passages: list[str], deadline_ms: float) -> dict |
         return None
 
 
+def probe(n: int = 5) -> dict:
+    """Does a generator fit the budget? Measured, over n calls, on one realistic context.
+
+    The question is not "is this model fast" but "can the whole retrieval-to-answer path
+    stay under 200 ms with this model in it", so the verdict subtracts what the rest of the
+    path already spends and compares against what is actually left."""
+    from harness.budget import TOTAL_MS
+    ctx = ("A corporation is a company or group of people authorized to act as a single "
+           "entity (legally a person) and recognized as such in law. Early incorporated "
+           "entities were established by charter.")
+    url, model, _, _ = config()
+    spent_by_the_rest = 22.0            # measured: embed 7 + retrieve 1 + extractive 13 ms
+    room = TOTAL_MS - spent_by_the_rest
+    samples, answers = [], 0
+    for i in range(n):
+        q = ["what is a corporation", "who won the 1998 world cup"][i % 2]
+        out = complete(q, [ctx], retries=0)
+        samples.append(out["llm_ms"])
+        answers += bool(out["answer"])
+        print(f"  {out['llm_ms']:8.0f} ms  grounded={str(out['grounded']):5}  "
+              f"{(out['answer'] or '(refused)')[:52]!r}", flush=True)
+    samples.sort()
+    p50 = samples[len(samples) // 2]
+    p100 = samples[-1]
+    fits = p100 <= room
+    print(f"\n  {PROVIDER}/{model}: n={n}  P50 {p50:.0f} ms  P100 {p100:.0f} ms")
+    print(f"  room left in the {TOTAL_MS:.0f} ms budget after the rest of the path: "
+          f"{room:.0f} ms")
+    print(f"  VERDICT: {'FITS' if fits else 'DOES NOT FIT'} "
+          f"({'every' if fits else 'the slowest'} call {'was under' if fits else 'was'} "
+          f"{p100:.0f} ms vs {room:.0f} ms of room)")
+    if not fits:
+        print(f"  -> {p100 / room:.1f}x over. Keep GENERATOR=extractive for the budget path; "
+              f"GENERATOR={PROVIDER and 'llm'} with a raised budget uses it deliberately.")
+    return {"provider": PROVIDER, "model": model, "p50": p50, "p100": p100,
+            "room_ms": room, "fits": fits, "n": n, "answered": answers}
+
+
 def demo():
     msgs = prompt_for("what is x", ["first passage", "second passage"])
     assert msgs[0]["role"] == "system" and "[2] second passage" in msgs[1]["content"]
@@ -195,13 +240,17 @@ def demo():
         e = parse(empty)
         assert e["answer"] == "" and not e["grounded"] and e["parsed"] == "empty", e
 
-    assert set(PROVIDERS) >= {"sarvam", "groq", "openai"}
+    assert set(PROVIDERS) >= {"sarvam", "groq", "xai", "openai"}
+    assert set(KEY_ENV) == set(PROVIDERS), "every provider needs a named key variable"
     print("llm harness ok (prompt, json, fences, refusal, junk, empty)")
 
 
 if __name__ == "__main__":
     import sys
 
+    if "--probe" in sys.argv:
+        probe(int(os.getenv("PROBE_N", "5")))
+        raise SystemExit(0)
     demo() if "--selfcheck" in sys.argv else print(json.dumps(
         complete(" ".join(sys.argv[1:]) or "what is a corporation",
                  ["A corporation is a company or group of people authorized to act as a "

@@ -173,6 +173,19 @@ make demo                                        # extractive, 20 ms, inside the
 GENERATOR=llm python service/ask.py --budget 4000 "what is a corporation"
 ```
 
+Whether *any* generator fits is a measurement, not an opinion, so it has a command:
+
+```bash
+make llm-probe                          # the configured provider
+LLM_PROVIDER=groq make llm-probe        # Groq, needs GROQ_API_KEY in .env
+LLM_PROVIDER=xai  make llm-probe        # xAI Grok, needs XAI_API_KEY
+```
+
+It subtracts what the rest of the path already spends (~22 ms) and compares the slowest
+call against what is actually left, then says FITS or DOES NOT FIT and by what factor.
+Sarvam: **18.7x over**. Four providers are wired behind one interface -- sarvam, groq, xai,
+openai -- so swapping is an env var and re-running the probe, not a rewrite.
+
 Both paths are harnessed identically. With `GENERATOR=llm` and a 200 ms budget the request
 logs `llm_deadline` and serves the extractive answer — the deadline wins, every time, by
 construction. The extractive answer is computed first and kept, so a timeout, a 5xx, junk

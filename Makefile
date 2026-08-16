@@ -9,7 +9,7 @@ CLIPS ?= data/audio
 PORT ?= 8000
 N ?= 300
 
-.PHONY: all corpus chunking calibrate latency guardrails demo serve tune stt legs submit check venv clean
+.PHONY: all corpus chunking calibrate latency guardrails demo serve tune llm-probe stt legs submit check venv clean
 
 all: submit
 
@@ -38,6 +38,11 @@ guardrails:
 ## make demo Q="..."   |   make demo AUDIO=data/audio/clip.wav
 demo:
 	$(PY) service/ask.py $(if $(AUDIO),--audio $(AUDIO),) $(Q)
+
+## does a generator fit the 200 ms budget? measured over PROBE_N calls
+## make llm-probe LLM_PROVIDER=groq   |   make llm-probe LLM_PROVIDER=xai
+llm-probe:
+	$(PY) service/llm.py --probe
 
 ## sweep the answer-path variants against MS MARCO's own answers (make tune N=1200)
 tune:
