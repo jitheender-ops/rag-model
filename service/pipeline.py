@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 
 from d1.chunkers import sentences, tokenize
@@ -80,11 +81,48 @@ CANARY = "PWNED"
 # 1.7 points of recall@50 -- and the serving path answers from the top 4, so precision at the
 # head is the thing that becomes an answer.
 BM25_WEIGHT = float(os.getenv("BM25_WEIGHT", "0.1"))
-# Same 300 queries: the lexical reorder costs 2.7 points of top-1 and 8.7 of top-4 against
-# leaving the fused order alone. It is a stand-in for a cross-encoder and a measurably
-# harmful one, so it is off by default. RERANK=lexical restores it; a real cross-encoder
-# replaces the body and the stage keeps its budget, its ladder rung and its latency row.
-RERANK = os.getenv("RERANK", "off")
+# cross   the cross-encoder, and the default wherever there is a real embedder to pair it with
+# off     serve the fused order -- what this repo's 200 ms PASS was first measured with
+# lexical the term-overlap reorder that used to occupy this slot. Kept only so the claim can
+#         be re-run: on 300 queries it cost 2.7 points of top-1 and 8.7 of top-4 against
+#         leaving the fused order alone, which is why the slot stood empty rather than filled.
+# The default follows the embedder for the same reason gate 2's floor refuses a calibration
+# fitted on another backend: EMBEDDER=hash means the run is testing logic, and a run testing
+# logic must not download 471 MB of transformer to do it.
+RERANK = os.getenv("RERANK", "cross" if BACKEND == "st" else "off")
+# Multilingual, because a quarter of the corpus is English and the rest is Devanagari, Tamil
+# and Bengali: the English MiniLM §2.6 names would reorder three quarters of the queries on
+# nothing. mMiniLMv2-L12-H384 is the smallest cross-encoder trained on mMARCO, 117M params,
+# and it does rank across scripts -- a Bengali question scores its Bengali passage above an
+# English one. Cost scales with how many candidates it reads: ~30 / 40 / 95 ms P50 at depth
+# 4 / 8 / 20 alone on this bench.
+RERANK_MODEL = os.getenv("RERANK_MODEL", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")
+RERANK_MAX_LEN = int(os.getenv("RERANK_MAX_LEN", "256"))
+# Depth 4, and it is the cheapest depth that was tried -- not the usual shape of a quality
+# knob, so it is worth saying why. `make tune N=1200`, answer F1 against the human answer,
+# paired and bootstrapped, everything measured against depth 4 because depth 4 is what ships:
+#   depth 4                                    F1 0.326   cites gold 41.5%
+#   depth 8      -0.0125  [-0.0206, -0.0047]   SIGNIFICANT   cites gold 40.7%    +11 ms
+#   depth 20     -0.0284  [-0.0385, -0.0192]   SIGNIFICANT   cites gold 38.2%   +139 ms
+#   no reranker  -0.0229  [-0.0349, -0.0111]   SIGNIFICANT   cites gold 34.6%    -37 ms
+# Read the last two rows together: depth 20 is worse than not reranking at all. Fusion already
+# puts the right passage in the top 4 for 68.5% of queries, so depth 4 is exactly where the
+# reranker's job is -- reordering candidates that are all plausible. Past that it is reaching
+# for ranks 5-20, where a 117M-param model's opinion is worse than the fusion's, and it pays
+# for the privilege out of the window.
+RERANK_TOP = int(os.getenv("RERANK_TOP", "4"))
+RERANK_TOP_DEGRADED = 2
+# 45 and not 31, and the gap between those two numbers is the point. Depth 4 alone on the
+# bench: P50 31 ms, P100 53. The same depth 4 inside the concurrency-4 pass, where four e5
+# forward passes are also running: P50 70, P95 86, P100 94. A stage's budget has to be what
+# the stage costs when the machine is busy, because busy is when the deadline matters -- and
+# the wait below is 2x this, so 35 capped the wait at 70 ms and threw away every rerank
+# slower than the median. It did: 86 of 500 concurrent requests waited the full 70 ms and
+# served the fused order anyway. At 45 that is 15.
+RERANK_BUDGET_MS = float(os.getenv("RERANK_BUDGET_MS", "45"))
+# What must be left when rerank stops waiting: generate's sentence encode (12 ms P50, 23 P95)
+# plus GENERATE_RESERVE_MS, which is verify's 20 ms and the lexical fallback's 10.
+RERANK_RESERVE_MS = 50.0
 # extractive by default, and the reason is measured rather than preferred: the fastest LLM
 # call observed on this account is 507 ms against a 200 ms budget for the whole path, so an
 # LLM in the serving path misses the deadline by a factor, not by a margin. GENERATOR=llm
@@ -251,19 +289,146 @@ def retrieve(ctx: Ctx, qvec, degraded=False):
     return ctx.hits
 
 
-@stage("rerank", budget_ms=15, degradable=True)
-def rerank(ctx: Ctx, degraded=False):
-    """Cross-encoder slot. Skipped by the ladder under 60 ms left.
+_cross_model = None
+# Two lanes. Not a bound on how long a rerank may run -- that is the deadline below -- but on
+# how many may run at once, and the number is measured, because a forward pass does not
+# parallelise the way request counts suggest. Depth 4, same pairs, same machine:
+#   1 at a time   P50 31 ms   P100  53 ms
+#   2 at a time   P50 35 ms   P100  56 ms   <- 4 ms for double the throughput
+#   4 at a time   P50 74 ms   P100  94 ms   <- past the deadline: waits that buy nothing
+# Four torch threads x four requests on ten cores is thrashing, not parallelism: past two, the
+# calls get slower than the deadline allows and nobody's rerank lands. So two run and the
+# third concurrent request serves the fused order *instantly* rather than waiting out a
+# reordering it would have to abandon. (Those are contention-free figures, which is what the
+# lane count is a decision about. What a rerank costs on a busy machine is RERANK_BUDGET_MS.)
+RERANK_LANES = int(os.getenv("RERANK_LANES", "2"))
+_rerank_lane = threading.BoundedSemaphore(RERANK_LANES)
+_rerank_pool_ = None
 
-    Off by default: the lexical stand-in that used to live here measurably hurt the ranking
-    it was meant to improve (see RERANK above). An empty stage that says why is worth more
-    than a heuristic that costs 8 points of top-4 -- and a cross-encoder dropped in here
-    inherits the budget, the rung and the latency row unchanged."""
-    if degraded or RERANK == "off":
+
+def _rerank_pool():
+    """Its own workers, one per lane, and not the encoder's.
+
+    Shared with the encoder first, and the traces said no: at concurrency 4 the four-worker
+    pool held two cross-encoders and two e5 passes, so a rerank could sit QUEUED while holding
+    its lane and then miss a deadline it never got to start on. 118 of 500 concurrent requests
+    burned the full 70 ms wait for nothing. One worker per lane means a rerank that holds a
+    lane is running, never queued, and the encoder never waits behind one."""
+    global _rerank_pool_
+    if _rerank_pool_ is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _rerank_pool_ = ThreadPoolExecutor(max_workers=RERANK_LANES,
+                                           thread_name_prefix="rerank")
+    return _rerank_pool_
+
+
+def cross_encoder():
+    """Loaded once, lazily, like the embedder -- and for the same reason: 471 MB of weights
+    that `make check` must never touch."""
+    global _cross_model
+    if _cross_model is None:
+        from sentence_transformers import CrossEncoder
+        _cross_model = CrossEncoder(RERANK_MODEL, max_length=RERANK_MAX_LEN)
+    return _cross_model
+
+
+def cross_scores_by(query: str, texts: list[str], deadline_ms: float):
+    """Cross-encoder relevance for (query, passage) pairs, or None to keep the fused order.
+
+    The third bounded model call in this file, after embed_by / embed_many_by, and the one
+    with the strictest bound -- because unlike the encoder, this one has a free alternative.
+    Waiting out the encoder is worth it: there is nothing else to spend the budget on and the
+    fallback (lexical retrieval, gate 2 unavailable) is much worse. Waiting out the reranker
+    is not: every millisecond spent here is taken from generate's dense sentence choice,
+    itself a measured +0.016 F1, so the wait is capped at 2x the stage budget rather than at
+    everything the budget has left. See rerank_deadline().
+    """
+    from concurrent.futures import TimeoutError as FutureTimeout
+    if not texts or not _rerank_lane.acquire(blocking=False):
+        return None
+
+    def work():
+        try:
+            return cross_encoder().predict([(query, t) for t in texts],
+                                           batch_size=len(texts), show_progress_bar=False)
+        finally:
+            _rerank_lane.release()
+
+    try:
+        return _rerank_pool().submit(work).result(timeout=deadline_ms / 1000)
+    except FutureTimeout:
+        return None
+
+
+def rerank_deadline(left_ms: float) -> float:
+    """How long this request may wait for the reranker: its own measured cost, and not one
+    millisecond of the budget that belongs to the stages after it."""
+    return min(2 * RERANK_BUDGET_MS, max(5.0, left_ms - RERANK_RESERVE_MS))
+
+
+def _by_score(hits: list, scores) -> list:
+    """Descending by score, ties keeping the order they came in -- which is the fused order,
+    so a reranker with nothing to say changes nothing."""
+    return [h for _, h in sorted(zip(scores, hits), key=lambda p: -p[0])]
+
+
+def rerank_hits(ctx: Ctx, depth: int, deadline_ms: float = 1e9) -> bool:
+    """Reorder the head of ctx.hits by cross-encoder score. True if it happened.
+
+    Only the head: the reranker exists to fix the ORDER of the candidates generate will read,
+    and generate reads one. Scoring all 50 fused hits would spend the whole window reordering
+    46 chunks nobody looks at -- and depth 20 already measured worse than depth 4."""
+    head = ctx.hits[:depth]
+    scores = cross_scores_by(ctx.query, [display(h[2].get("text", "")) for h in head],
+                             deadline_ms)
+    if scores is None:
+        return False
+    ctx.hits = _by_score(head, scores) + ctx.hits[depth:]
+    return True
+
+
+@stage("rerank", budget_ms=RERANK_BUDGET_MS, degradable=True)
+def rerank(ctx: Ctx, degraded=False):
+    """Cross-encoder over the top 4, and the reason the stage was empty until now.
+
+    Fusion puts the right passage in the top 4 for 68.5% of queries but ranks it #1 for only
+    34.6%, and generate answers from #1 -- so half the recall the index already has is thrown
+    away by the ordering. That gap was the whole case for this stage, and the reranker closes
+    a third of it. Same 1200 held-out queries, chunk level:
+
+      fused (what shipped)   top-1 34.6%   top-4 68.5%   MRR@10 0.504
+      + cross-encoder, top 4 top-1 41.5%   top-4 68.5%   MRR@10 0.553
+      + cross-encoder, top 8 top-1 40.7%   top-4 73.3%   MRR@10 0.556
+
+    Reordering four candidates cannot change which four they are, so top-4 is flat by
+    construction and top-1 is the column that matters -- it is the rank generate reads. Depth
+    8 buys top-4 instead, which nothing downstream looks at, and loses top-1 doing it.
+
+    This is also why the lexical stand-in was deleted rather than left in place: it moved the
+    same column the wrong way (-2.7 top-1, -8.7 top-4). An empty stage that says why was
+    worth more than a heuristic; a model that moves top-1 by +6.9 points is worth more still.
+    """
+    if RERANK == "off":
         return ctx.hits
-    q = content(ctx.query)
-    ctx.hits.sort(key=lambda h: -(len(q & content(h[2].get("text", ""))) / (len(q) or 1)
-                                  + h[1]))
+    if RERANK == "lexical":                     # the harmful stand-in, kept for comparison
+        q = content(ctx.query)
+        ctx.hits.sort(key=lambda h: -(len(q & content(h[2].get("text", ""))) / (len(q) or 1)
+                                      + h[1]))
+        return ctx.hits
+    left = ctx.budget.remaining() if ctx.budget else TOTAL_MS
+    deadline = rerank_deadline(left)
+    depth = RERANK_TOP_DEGRADED if degraded else RERANK_TOP
+    # The pre-flight `@stage` check knows this stage's own cost but not the 50 ms it owes the
+    # stages after it, so it will wave through a request with 50 ms left -- which then buys a
+    # 5 ms wait it cannot possibly finish in. Half the budget is the same bar Budget.check
+    # uses for DEGRADE, and short-circuiting here means such a request does not even take a
+    # lane off a request that could have used it.
+    if deadline < RERANK_BUDGET_MS / 2 or not rerank_hits(ctx, depth, deadline):
+        # too little left, no lane, or it ran past the deadline. The fused order is a real
+        # answer, not an error: it is the order this repo shipped its measured PASS with.
+        ctx.trace.event("rerank_skipped", waited_ms=round(deadline, 1), depth=depth)
+        if ctx.budget is not None:
+            ctx.budget.degradations.append("rerank")
     return ctx.hits
 
 
@@ -523,6 +688,13 @@ def load_index(strategy_dir: str) -> tuple[Index, dict, dict]:
     # touch the model, so the cold run's first query would otherwise carry a 10 s span and
     # a budget violation that says nothing about the serving path.
     embed("ready", "query")
+    if RERANK == "cross":
+        # same reason, and it must be a real forward pass at the real batch shape, not just
+        # the constructor: the weights are 471 MB and ~10 s, and the first predict is another
+        # ~25 ms of torch warming up on top. Real chunks, RERANK_TOP of them, because a
+        # warm-up on two short strings warms a tensor shape no request will ever use.
+        cross_encoder().predict([("ready", r["text"]) for r in rows[:RERANK_TOP]],
+                                show_progress_bar=False)
     return ix.freeze(), texts, parents
 
 
@@ -586,6 +758,58 @@ def demo():
         raise AssertionError("a 1 ms wait on a 200 ms call must time out")
     except _Timeout:
         pass
+
+    # the reranker's reorder, without the 471 MB model: descending by score, and stable on
+    # ties so that a reranker with nothing to say leaves the fused order alone
+    assert _by_score(["a", "b", "c"], [0.1, 9.0, 0.5]) == ["b", "c", "a"]
+    assert _by_score(["a", "b", "c"], [1.0, 1.0, 1.0]) == ["a", "b", "c"]
+    # its deadline is its own cost, never the whole remaining budget -- the difference
+    # between this and encoder_deadline() is the point: waiting here is not free
+    assert rerank_deadline(200.0) == 2 * RERANK_BUDGET_MS
+    assert rerank_deadline(RERANK_RESERVE_MS + 30.0) == 30.0
+    assert rerank_deadline(5.0) == 5.0
+    # ...and a request whose deadline is under half the budget must not start one at all: it
+    # would spend the wait and serve the fused order anyway, having taken a lane to do it
+    global RERANK
+    starved_rr = Ctx("bridge", ix, Trace("rr0"), Budget(RERANK_RESERVE_MS + 10.0))
+    retrieve(starved_rr, embed("bridge", "query"))
+    was0, RERANK = RERANK, "cross"
+    try:
+        rerank(starved_rr)
+    finally:
+        RERANK = was0
+    assert [e for e in starved_rr.trace.events if e["kind"] == "rerank_skipped"], \
+        "a deadline under half the budget must skip without waiting"
+    assert all(_rerank_lane.acquire(blocking=False) for _ in range(RERANK_LANES)), \
+        "a skipped rerank must not have taken a lane"
+    for _ in range(RERANK_LANES):
+        _rerank_lane.release()
+    # the lanes: a rerank arriving when they are all taken must decline instantly rather than
+    # queue. Holding them all is also what keeps the 471 MB model out of `make check`.
+    assert all(_rerank_lane.acquire(blocking=False) for _ in range(RERANK_LANES))
+    try:
+        assert cross_scores_by("q", ["a"], 5000.0) is None, "no lane -> keep the fused order"
+    finally:
+        for _ in range(RERANK_LANES):
+            _rerank_lane.release()
+    assert cross_scores_by("q", [], 5000.0) is None, "nothing to rerank"
+    # and a skipped rerank is a degradation with a reason, not a silent pass. The stage is
+    # forced on here because the hashed backend leaves it off; holding the lane keeps the
+    # model out of it, so this checks the bookkeeping and never the weights.
+    was, RERANK = RERANK, "cross"
+    skipped = Ctx("bridge", ix, Trace("rr"), Budget(200.0))
+    retrieve(skipped, embed("bridge", "query"))
+    fused = list(skipped.hits)
+    assert all(_rerank_lane.acquire(blocking=False) for _ in range(RERANK_LANES))
+    try:
+        rerank(skipped)
+    finally:
+        for _ in range(RERANK_LANES):
+            _rerank_lane.release()
+        RERANK = was
+    assert "rerank" in skipped.budget.degradations, skipped.budget.report()
+    assert [e for e in skipped.trace.events if e["kind"] == "rerank_skipped"]
+    assert skipped.hits == fused, "a skipped rerank must leave the fused order untouched"
 
     # the fallback that deadline buys: retrieval still runs, lexically, and says so
     lex = Ctx("bridge of Vasco completed", ix, Trace("lex"), None, lexical_only=True)

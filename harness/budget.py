@@ -17,7 +17,10 @@ TOTAL_MS = 200.0
 # (remaining_ms_below, name, what it does)
 LADDER = [
     (40.0, "extractive", "no LLM: return the top chunk's best sentence, flagged extractive"),
-    (60.0, "no_rerank", "skip the cross-encoder, serve the RRF order (~4 nDCG, buys 15ms)"),
+    # 95, not 60: the cross-encoder that now fills the slot has a 45ms budget and the stages
+    # after it need 50ms, so a request with less than the sum cannot afford to start one.
+    # Both halves are measured -- see RERANK_BUDGET_MS / RERANK_RESERVE_MS in service/pipeline.py.
+    (95.0, "no_rerank", "skip the cross-encoder, serve the RRF order (buys 45ms)"),
     (150.0, "short_output", "output cap 96 -> 48 tokens, context trimmed to 2 chunks"),
 ]
 

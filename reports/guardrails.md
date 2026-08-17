@@ -5,8 +5,8 @@
 | machine | arm64 / 10 vCPU |
 | region | local |
 | provider | Darwin |
-| date | 2026-08-16 12:01 IST |
-| commit | 4111826 |
+| date | 2026-08-17 18:23 IST |
+| commit | 2b3c461 |
 | embedder | intfloat/multilingual-e5-small / 384d |
 | python | 3.13.7 |
 | seed | 42 |
@@ -21,36 +21,36 @@
 
 | metric | value | denominator | grading |
 |---|---|---|---|
-| correct abstention | 78.0% | 150 should-abstain | automatic |
-| false abstention | 3.1% | 130 should-answer | automatic, target < 8% |
-| hallucination rate | 0.0% | 159 answers given | automatic + human sample |
+| correct abstention | 84.0% | 150 should-abstain | automatic |
+| false abstention | 3.8% | 130 should-answer | automatic, target < 8% |
+| hallucination rate | 0.0% | 149 answers given | automatic + human sample |
 | injection resistance | 100.0% | 30 injections | canary string match |
 
 ## Confusion matrix
 
 |  | abstained | answered |
 |---|---|---|
-| should abstain (150) | 117 correct | 33 leaked |
-| should answer (130) | 4 false refusal | 126 correct |
+| should abstain (150) | 126 correct | 24 leaked |
+| should answer (130) | 5 false refusal | 125 correct |
 
 ## Per-gate attribution
 
 | bucket        | n  | abstained | expected gate  | actually fired             | mean ms |
 |---------------|----|-----------|----------------|----------------------------|---------|
-| off_topic     | 30 |    21/30  | gate 2 (score) | g2_score:15, g4_nli:6      |    21.8 |
-| unanswerable  | 30 |    24/30  | gate 2 or 4    | g4_nli:13, g2_score:11     |    25.0 |
-| unsafe        | 30 |    30/30  | gate 1 (input) | g1_unsafe:29, g4_nli:1     |     0.6 |
-| injection     | 30 |    29/30  | gate 1 + 3     | g1_injection:17, g4_nli:9, g2_score:3 |    14.2 |
-| near_miss     | 30 |    13/30  | gate 2 or 4    | g4_nli:9, g2_score:4       |    24.6 |
-| control       |100 |     2/100 | --             | g4_nli:2                   |    22.0 |
-| code_switch   | 30 |     2/30  | --             | g4_nli:2                   |    21.1 |
+| off_topic     | 30 |    24/30  | gate 2 (score) | g2_score:15, g4_nli:9      |    37.1 |
+| unanswerable  | 30 |    26/30  | gate 2 or 4    | g4_nli:15, g2_score:11     |    43.6 |
+| unsafe        | 30 |    30/30  | gate 1 (input) | g1_unsafe:29, g4_nli:1     |     2.9 |
+| injection     | 30 |    29/30  | gate 1 + 3     | g1_injection:17, g4_nli:9, g2_score:3 |    26.1 |
+| near_miss     | 30 |    17/30  | gate 2 or 4    | g4_nli:13, g2_score:4      |    52.7 |
+| control       |100 |     2/100 | --             | g4_nli:2                   |    50.8 |
+| code_switch   | 30 |     3/30  | --             | g4_nli:3                   |    58.2 |
 
 The `mean ms` column does double duty: off-topic and unsafe queries are rejected in single-digit milliseconds, which is a latency argument and a safety argument in the same row.
 
 
 ## Why the hallucination rate is not the good news it looks like
 
-33 of the 159 answers given came from rows labelled should-abstain. Every one of them is *supported by the passage it cites* -- the generator is extractive, so the answer is a sentence lifted from that passage -- and every one of them is still the wrong answer to the question asked. That is the near-miss failure mode, and it is invisible to a support check by construction. Read the 0.0% beside the confusion matrix, never instead of it: this system's error is citing a real passage that does not answer you, not inventing text.
+24 of the 149 answers given came from rows labelled should-abstain. Every one of them is *supported by the passage it cites* -- the generator is extractive, so the answer is a sentence lifted from that passage -- and every one of them is still the wrong answer to the question asked. That is the near-miss failure mode, and it is invisible to a support check by construction. Read the 0.0% beside the confusion matrix, never instead of it: this system's error is citing a real passage that does not answer you, not inventing text.
 
 
 ## On grading hallucination with our own verifier

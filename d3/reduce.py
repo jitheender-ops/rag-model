@@ -114,10 +114,13 @@ def svg(rows: list[dict], cold: list[dict], path: str):
 def backend_note() -> str:
     """Say which components are real, so nobody reads a stand-in's timing as a model's."""
     from d1.index import BACKEND
-    real = ("The `embed query` row is a real transformer forward pass "
-            "(multilingual-e5-small on CPU). Generation is still extractive and the "
-            "reranker is lexical, so those two rows are floors, not an LLM's cost: "
-            "budget for ~15 ms of cross-encoder and the generator's own time on top."
+    real = ("The `embed query` and `rerank` rows are real transformer forward passes "
+            "(multilingual-e5-small and a mMiniLMv2-L12 cross-encoder, both on CPU). "
+            "Generation is still extractive, so that row is a floor rather than an LLM's "
+            "cost: budget the generator's own time on top of it. The `rerank` row is the "
+            "reranks that RAN -- a request whose lanes were busy or whose deadline expired "
+            "logs `rerank_skipped` and serves the fused order, which is why the warm P50 "
+            "here sits near the stage's solo cost while the concurrency pass is slower."
             if BACKEND == "st" else
             "This run used the hashed bag-of-words embedder, so every row is the "
             "harness's own cost rather than a model's. Run with the venv "

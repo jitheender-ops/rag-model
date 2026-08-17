@@ -39,8 +39,9 @@ bag-of-words fallback: same signatures, worse numbers, zero downloads. Force eit
 
 ## Running the demo
 
-Two commands from a fresh clone. The frozen corpus and query sets are committed, so nothing
-is downloaded except the embedder:
+Two commands from a fresh clone. The frozen corpus and query sets are committed, so the only
+downloads are the two models — the embedder, and the reranker on first use (~471 MB, cached
+by `sentence-transformers`; `RERANK=off` skips it):
 
 ```bash
 make venv        # once: sentence-transformers + multilingual-e5-small (~1.5 GB)
@@ -53,12 +54,18 @@ hand-picked query that happens to work is a demo of the query, not of the system
 
 ```
 question : কী চর্বি দিয়ে তৈরি
-answer   : সেরা উত্তর: এটি চর্বি দিয়ে তৈরি.
-cited    : s7 metadata-filtered:bn:1055324:1:0
+answer   : চর্বি কার্বন, হাইড্রোজেন এবং অক্সিজেন সমন্বিত ফ্যাটি অ্যাসিড দিয়ে তৈরি।
+cited    : s7 metadata-filtered:bn:1055324:0:0
 
-spans ms : guards 0.01  embed 15.24  retrieve 1.22  rerank 0.00  generate 0.10  verify 0.02
-total    : 16.65 ms of 200 ms -- within budget
+spans ms : guards 0.02  embed 17.25  retrieve 1.31  rerank 35.02  generate 23.12  verify 0.04
+total    : 76.85 ms of 200 ms -- within budget
 ```
+
+This one is also the clearest single illustration of what the reranker bought. Before it, the
+same query returned chunk `:1:0` and the sentence *"সেরা উত্তর: এটি চর্বি দিয়ে তৈরি"* — "best
+answer: it is made of fat", a sentence that restates the question. The cross-encoder ranks
+`:0:0` first instead, and the answer becomes the fact the human answer states. Retrieval had
+that passage in its top 4 the whole time; nothing found it, the ordering just moved.
 
 Ask your own, in any of the four languages, or code-switched:
 
@@ -92,8 +99,8 @@ STT_PROVIDER=mock python service/ask.py --audio clip.wav # the path, offline
 Both legs sit outside the window by construction — STT before `t0`, TTS after `t1` — and
 both are measured rather than asserted. On this account: **STT ~400 ms** for a second of
 audio, **TTS ~680 ms** P50 for an answer-length line, against a **measured window of
-8.2 ms**. The part you engineer is about 1% of what the user waits for, which is exactly
-why the budget is drawn where it is and why `make legs` publishes the other 99% beside it.
+48 ms**. The part you engineer is about 4% of what the user waits for, which is exactly
+why the budget is drawn where it is and why `make legs` publishes the other 96% beside it.
 
 A refusal is spoken as a refusal. Reading out an empty answer is silence a user cannot tell
 from a crash, and reading out the top passage anyway would undo gate 4 at the last moment,
@@ -102,8 +109,9 @@ where nobody would look for it.
 Each leg is printed on its own line and never summed into the total without a label — and
 for the mock STT the combined figure is not printed at all, since a 0 ms leg added to a
 measured window is fiction, and fiction is what gets quoted. **The 200 ms budget is
-`t0 → t1`, not mic-to-speaker.** The honest headline is "retrieval to grounded answer in
-8 ms against a 200 ms budget", with both vendor legs measured and published beside it.
+`t0 → t1`, not mic-to-speaker.** The honest headline is "retrieval to reranked, grounded
+answer in 48 ms against a 200 ms budget", with both vendor legs measured and published
+beside it.
 
 ### The browser demo
 
@@ -135,13 +143,13 @@ Three deliberate choices in it:
   combined figure is not emitted at all, because a 0 ms leg added to a measured window is
   fiction, and fiction is what gets quoted;
 - **a TTS failure degrades to a text answer**, never to a failed request. The answer already
-  happened, in 8 ms; the vendor being slow afterwards does not unmake it.
+  happened, in 48 ms; the vendor being slow afterwards does not unmake it.
 
 Speaking needs `SARVAM_API_KEY` in the server's environment; typing into the box needs
 nothing. `STT_PROVIDER=mock make serve` exercises the whole audio path offline.
 
 To regenerate every table instead of asking one question: `make submit` (~30 min), or
-`make check` for the 21 self-checks, which need no model and no network.
+`make check` for the 23 self-checks, which need no model and no network.
 
 ## Against the brief
 
@@ -149,10 +157,10 @@ To regenerate every table instead of asking one question: `make submit` (~30 min
 |---|---|---|
 | 1 | **Speech-to-text: Sarvam or ElevenLabs** | Sarvam (`stt/sarvam.py`), batch + streaming. Live on real clips: **520.7 / 856.5 / 856.5 ms** P50/P95/P100 over 6 recordings, all four languages transcribed correctly |
 | 2 | **Chunking must be vast** | **eight** strategies compared on one corpus, one embedder, one set of index params (`d1/`): fixed 256/64, recursive 320/80, sentence-window, semantic-drift, proposition, parent-document, metadata-filtered, multi-granularity. Scored at passage granularity against **human `is_selected` qrels**, winner **s7 at 0.892 recall@50** |
-| 3 | **Under 200 ms** | **PASS, 1500/1500 requests**, across warm, cold and concurrency-4. P50 **20.2 ms**, slowest single request **180 ms**. Not a claim: `harness/budget.py` refuses to enter a stage that cannot finish |
+| 3 | **Under 200 ms** | **PASS, 1500/1500 requests**, across warm, cold and concurrency-4. P50 **48.0 ms**, slowest single request **175 ms**. Not a claim: `harness/budget.py` refuses to enter a stage that cannot finish |
 | 4 | **P50 / P70 / P100 across many queries** | `reports/latency.md`, **500 frozen queries x 3 modes**, per stage and end to end, nearest-rank, never a single best-case run |
 | 5 | **Harness, not a raw prompt** | six timed stages under one budget object, a degradation ladder, bounded deadlines on every unbounded call, retries only where retrying is affordable, structured JSON in and out (`service/server.py`), and `service/llm.py` — structured output, parse-or-fallback, bounded retries, deadline, error recovery |
-| 6 | **Guardrails** | four gates, graded on **280 labelled queries** (`reports/guardrails.md`): correct abstention **78%**, false abstention **3.1%** against a <8% target, injection resistance **100%**, plus a confusion matrix and per-gate attribution |
+| 6 | **Guardrails** | four gates, graded on **280 labelled queries** (`reports/guardrails.md`): correct abstention **84%**, false abstention **3.8%** against a <8% target, injection resistance **100%**, plus a confusion matrix and per-gate attribution |
 
 ### The one place the brief and the measurements disagree
 
@@ -163,11 +171,20 @@ left:
 
 ```
                                    P50      P100     room     verdict
-groq / llama-3.1-8b-instant      161 ms   309 ms   178 ms   fits at P50, not at P100
-sarvam-105b-conversations       2126 ms  3334 ms   178 ms   18.7x over
-sarvam-105b (reasoning)         4878 ms            178 ms   spends its tokens on reasoning
-the extractive path                20 ms    36 ms   200 ms   PASS, 1500/1500
+groq / llama-3.1-8b-instant      161 ms   309 ms   152 ms   no longer fits, even at P50
+sarvam-105b-conversations       2126 ms  3334 ms   152 ms   13.7x over
+sarvam-105b (reasoning)         4878 ms            152 ms   spends its tokens on reasoning
+the extractive path                48 ms   118 ms   200 ms   PASS, 1500/1500
 ```
+
+The `room` column moved, and it is worth saying why rather than quietly restating it: it was
+**178 ms**, and Groq's 161 ms P50 fit inside it. Then the cross-encoder took its ~26 ms P50
+and the room is 152 ms — about 170 ms in practice when the LLM is generating, because that
+path skips the extractive sentence pick it no longer needs. Either way Groq went from
+comfortably inside the window to a coin flip. **The reranker spent the headroom an in-window
+LLM would have needed, and that was the right trade on the evidence**: the reranker beat the
+shipped answer by more than its error bar over 1200 queries, and the LLM did not (next
+section). It is still a trade, so it belongs here and not in a footnote.
 
 Groq is the interesting row, and getting it there was engineering rather than luck. `urllib`
 opens a fresh TLS connection per call: **48 ms of handshake on every request**, and a
@@ -196,7 +213,7 @@ answer is extractive; if generation is firm, the target is not 200 ms. Both path
 harnessed identically, so the choice is an env var and a re-measure:
 
 ```bash
-make demo                                                       # extractive, 20 ms
+make demo                                                       # extractive, 48 ms
 GENERATOR=llm LLM_PROVIDER=groq python service/ask.py --budget 4000 "what is a corporation"
 ```
 
@@ -250,14 +267,14 @@ the corpus. That is what pulls the strategies apart: on the synthetic corpus eve
 <!-- D1:START -->
 | strategy                   | recall@50 | nDCG@10 | MRR@10 | size  | build | p50   |
 |----------------------------|-----------|---------|--------|-------|-------|-------|
-| s1 fixed 256/64            |     0.888 |   0.577 |  0.501 |  20.0 |  1.02 |  0.28 |
-| s2 recursive 320/80        |     0.889 |   0.577 |  0.501 |  19.9 |  0.91 |  0.28 |
-| s3 sentence-window         |     0.746 |   0.453 |  0.392 |  85.0 |  1.80 |  1.82 |
-| s4 semantic drift          |     0.787 |   0.488 |  0.425 |  55.1 |  3.98 |  1.37 |
+| s1 fixed 256/64            |     0.888 |   0.577 |  0.501 |  20.0 |  1.09 |  0.34 |
+| s2 recursive 320/80        |     0.889 |   0.577 |  0.501 |  19.9 |  1.11 |  0.29 |
+| s3 sentence-window         |     0.746 |   0.453 |  0.392 |  85.0 |  2.11 |  1.27 |
+| s4 semantic drift          |     0.787 |   0.488 |  0.425 |  55.1 |  5.17 |  0.97 |
 | s5 proposition (sampled)   |     0.832 |   0.492 |  0.430 |  12.1 |  0.18 |  0.09 |
-| s6 parent-document         |     0.878 |   0.569 |  0.494 |  20.8 |  1.22 |  0.32 |
-| s7 metadata-filtered       |     0.892 |   0.580 |  0.504 |  20.0 |  1.37 |  0.28 |
-| s8 multi-granularity       |     0.812 |   0.517 |  0.451 | 125.2 |  4.84 |  2.47 |
+| s6 parent-document         |     0.878 |   0.569 |  0.494 |  20.8 |  1.39 |  0.32 |
+| s7 metadata-filtered       |     0.892 |   0.580 |  0.504 |  20.0 |  1.57 |  0.29 |
+| s8 multi-granularity       |     0.812 |   0.517 |  0.451 | 125.2 |  4.92 |  2.25 |
 <!-- D1:END -->
 
 ## D2 — the 200 ms window
@@ -286,9 +303,10 @@ entering the stage — so overrun is impossible rather than unlikely. The ladder
 | remaining | what happens |
 |---|---|
 | < 150 ms | output cap 96 → 48 tokens, context trimmed to 2 chunks |
-| < 60 ms | skip the reranker, serve the fused order |
+| < 95 ms | skip the cross-encoder, serve the fused order (its 45 ms budget plus the 50 ms the stages after it need) |
 | < 40 ms | no LLM at all — top chunk's best-matching sentence, flagged extractive |
 | encoder still running with only `LEXICAL_RESERVE_MS` left | stop waiting for the vector, retrieve lexically, log `encoder_deadline` |
+| reranker still running with only `RERANK_RESERVE_MS` left, or both lanes busy | stop waiting, serve the fused order, log `rerank_skipped` |
 | stage > 2× its budget | log `deadline_violation` with the stage name |
 
 The degradation rate is published in the D3 report. Deliberate degradation is
@@ -302,6 +320,76 @@ request waits only as long as its budget allows, and an abandoned vector costs q
 (lexical retrieval, gate 2 unavailable, both logged) instead of the deadline. That is the
 difference between a ladder that describes an abort and one that performs it.
 
+**And a bounded wait is not enough for a stage that has a free alternative.** The
+cross-encoder is the third model call under a deadline in this file, and the only one whose
+fallback costs nothing — the fused order is what this repo shipped its PASS with. So its wait
+is capped at 2× its own budget rather than at everything the budget has left, because every
+millisecond spent waiting here is taken from `generate`'s dense sentence choice, itself a
+measured +0.016 F1. Two further findings, both from the traces rather than from reasoning:
+
+- **it needs a lane count, not just a deadline.** One depth-4 forward pass costs 31 ms; four
+  at once cost 74 ms, because four torch threads × four requests on ten cores is thrashing,
+  not parallelism. Two run at a time and the third request serves the fused order *instantly*
+  rather than queueing for a reordering it would have to abandon;
+- **it needs its own workers.** Sharing the encoder's pool let a rerank sit queued while
+  holding its lane, then miss a deadline it never started on: 118 of 500 concurrent requests
+  burned the full wait for nothing. One worker per lane means a rerank that holds a lane is
+  running. Combined with sizing the budget on the *busy* machine (70 ms P50 under
+  concurrency-4, not the 31 ms it costs alone), the wasted waits went 118 → 15 of 500.
+
+### How the reranker earned its 26 ms
+
+The stage stood empty for a reason: the lexical stand-in that used to fill it was *measured to
+hurt* (−2.7 pts top-1, −8.7 pts top-4), and an empty stage that says so is worth more than a
+heuristic. So the replacement had to clear the same bar the last three tuning decisions
+cleared — `make tune N=1200`, token F1 against MS MARCO's own human answers, paired and
+bootstrapped over the same 1200 held-out queries, beating what ships by more than its 95% CI:
+
+```
+| variant                          | answer F1 | cites gold | ms P50 |
+| lexical sentence, top 4          |     0.286 |      31.5% |    8.4 |
+| dense sentence, top 4            |     0.283 |      31.9% |   44.1 |
+| dense sentence, top 1, no rerank |     0.303 |      34.6% |   19.1 |
+| whole top chunk                  |     0.249 |      34.6% |    8.3 |
+| cross-encoder top 4 (shipped)    |     0.326 |      41.5% |   56.0 |
+| cross-encoder top 8              |     0.313 |      40.7% |   67.2 |
+| cross-encoder top 20             |     0.297 |      38.2% |  195.2 |
+
+paired against what ships, 95% bootstrap CI over the same 1200 queries:
+  dense sentence, top 1, no rerank -0.0229 F1  [-0.0349, -0.0111]  SIGNIFICANT   -36.9 ms
+  cross-encoder top 8              -0.0125 F1  [-0.0206, -0.0047]  SIGNIFICANT   +11.2 ms
+  cross-encoder top 20             -0.0284 F1  [-0.0385, -0.0192]  SIGNIFICANT  +139.2 ms
+```
+
+Three things in that table are worth more than the headline. **The winning depth is the
+cheapest one**: depth 8 and depth 20 are both *significantly worse* than depth 4, and depth 20
+is worse than not reranking at all. Fusion already lands the right passage in the top 4 for
+68.5% of queries, so reordering four plausible candidates is the whole job; reaching down to
+rank 20 promotes passages the fusion ranked low for good reason. **The model has to be
+multilingual** — three quarters of this corpus is Devanagari, Tamil or Bengali, and the
+English MiniLM the spec names would reorder those queries on nothing. And **the baseline row
+moves when the serving path moves**, which is why the table above is scored against the
+cross-encoder and not against the answer path from two commits ago.
+
+At the retrieval level, on the same queries, the effect is entirely in the rank that gets read:
+
+```
+                        top-1    top-4   MRR@10
+fused (what shipped)    34.6%    68.5%    0.504
++ cross-encoder, top 4  41.5%    68.5%    0.553
++ cross-encoder, top 8  40.7%    73.3%    0.556
+```
+
+Reordering four candidates cannot change *which* four they are, so top-4 is flat by
+construction and top-1 is the only column that matters — `generate` reads rank 1. Depth 8 buys
+top-4 instead, which nothing downstream looks at, and gives up top-1 to do it.
+
+The reranker also improved two numbers it does not own. D4's correct-abstention rate went
+**78% → 84%** and near-miss detection **13/30 → 17/30**, because gate 4 grades the answer
+against the passage it cites and the citation got better. Gate 4 itself did not change; its
+floors were refitted by `make calibrate` on the same run, as they are whenever an upstream
+stage moves.
+
 Both thresholds in the serving path are measured, not chosen. Cosine scales are not
 comparable across embedders or corpora, and lexical coverage depends entirely on how the
 questions were written — on a generated corpus the query is built from the passage's own
@@ -314,7 +402,7 @@ number flatters the confusion matrix.
 ## D3 — latency analytics
 
 <!-- D3V:START -->
-> **200 ms budget: PASS.** 1500/1500 requests inside the window across every mode (warm 0/500, cold 0/500, conc 0/500 over budget). Slowest single request 180.1 ms. Excluded legs are listed below and are not part of this verdict.
+> **200 ms budget: PASS.** 1500/1500 requests inside the window across every mode (warm 0/500, cold 0/500, conc 0/500 over budget). Slowest single request 175.2 ms. Excluded legs are listed below and are not part of this verdict.
 <!-- D3V:END -->
 
 500 frozen queries (350 in-domain, 100 spoken-style paraphrases, 50 out-of-domain), cold
@@ -326,14 +414,14 @@ concurrency-4 pass — because reporting the friendliest of three is not a verdi
 <!-- D3:START -->
 | stage             |  P50 |  P70 |  P95 | P100 |
 |-------------------|------|------|------|------|
-| input guards      | 0.01 | 0.01 | 0.01 | 0.02 |
-| embed query       | 7.30 | 7.77 | 9.55 | 14.94 |
-| dense + bm25 + rrf | 1.21 | 1.69 | 2.55 | 3.38 |
-| rerank            | 0.00 | 0.00 | 0.00 | 0.00 |
-| generate          | 12.52 | 15.58 | 23.15 | 96.55 |
-| verify            | 0.04 | 0.04 | 0.06 | 0.79 |
-| END-TO-END (warm) | 20.16 | 23.62 | 32.24 | 105.40 |
-| END-TO-END (cold) | 21.47 | 24.45 | 33.22 | 147.18 |
+| input guards      | 0.01 | 0.01 | 0.02 | 0.03 |
+| embed query       | 8.75 | 10.63 | 14.17 | 18.51 |
+| dense + bm25 + rrf | 1.34 | 2.03 | 3.70 | 6.29 |
+| rerank            | 25.92 | 32.07 | 48.80 | 68.94 |
+| generate          | 15.38 | 19.15 | 30.12 | 76.77 |
+| verify            | 0.05 | 0.06 | 0.10 | 0.31 |
+| END-TO-END (warm) | 47.97 | 62.22 | 84.26 | 118.32 |
+| END-TO-END (cold) | 58.12 | 67.67 | 86.08 | 143.12 |
 <!-- D3:END -->
 
 ## D4 — guardrail metrics
@@ -344,9 +432,9 @@ abstention, so the false-abstention rate on those 130 is reported beside it.
 <!-- D4:START -->
 | metric | value | denominator | grading |
 |---|---|---|---|
-| correct abstention | 78.0% | 150 should-abstain | automatic |
-| false abstention | 3.1% | 130 should-answer | automatic, target < 8% |
-| hallucination rate | 0.0% | 159 answers given | automatic + human sample |
+| correct abstention | 84.0% | 150 should-abstain | automatic |
+| false abstention | 3.8% | 130 should-answer | automatic, target < 8% |
+| hallucination rate | 0.0% | 149 answers given | automatic + human sample |
 | injection resistance | 100.0% | 30 injections | canary string match |
 <!-- D4:END -->
 
@@ -374,7 +462,7 @@ upgrade path:
 | index | exact search (dense matmul / sparse postings) | faiss/qdrant HNSW behind `Index.search()` |
 | generation | extractive, and **tuned**: the sentence is chosen by embedding, in the top chunk only (+0.016 answer F1 [+0.006, +0.028] over lexical choice, 1200 queries) | LLM at temperature 0 behind `generate()` |
 | gate 4 verifier | lexical support + coverage, floor measured | NLI cross-encoder behind `verify()` — the highest-value swap in the repo |
-| reranker | **off** — the lexical stand-in measurably hurt the ranking (−2.7 pts top-1, −8.7 pts top-4 on 300 held-out queries), so the stage is empty and says why | cross-encoder behind `rerank()`, `RERANK=lexical` restores the old behaviour |
+| reranker | **real** — mMiniLMv2-L12-H384 cross-encoder over the top 4, multilingual because three quarters of the corpus is not English (+0.023 answer F1 [+0.011, +0.035], top-1 34.6% → 41.5%, 1200 queries). The lexical stand-in it replaced *hurt* the same column (−2.7 pts top-1) and was deleted rather than kept | `RERANK=off` serves the fused order, `RERANK=lexical` restores the harmful stand-in for comparison |
 | hybrid fusion | dense + BM25 at weight 0.1, chosen by sweep — equal weight cost 5.7 pts of top-1 to buy 1.7 pts of recall@50 | reciprocal-rank fusion with a trained weight |
 | D4 abstain rows | real held-out MS MARCO queries (gold absent in every language) + hand-written unsafe/injection lists | — |
 | D4 code-switch rows | machine splice: English noun phrase from the parallel row + Indic question frame | hand-edit `data/guardrails.jsonl`, it is never overwritten |

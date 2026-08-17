@@ -67,7 +67,8 @@ def _sentences_of(text, P):
 
 
 def pick_lexical(ctx, texts, qvec, P, n_ctx=4, cap=96):
-    """Shipped behaviour: the sentence with the most query content terms, across n_ctx chunks."""
+    """What shipped before this file existed: the sentence with the most query content
+    terms, across n_ctx chunks."""
     q = P.content(ctx.query)
     best, best_score, best_cid = "", -1.0, None
     for cid, _, _ in ctx.hits[:n_ctx]:
@@ -127,11 +128,32 @@ def pick_llm(ctx, texts, qvec, P, n_ctx=3, cap=96):
     return " ".join((out.get("answer") or "").split()[:cap]), cid
 
 
+def pick_cross(depth: int):
+    """Cross-encoder over the top `depth` fused hits, then the shipped sentence choice.
+
+    The reranker changes which chunk is #1; generate reads #1 and picks a sentence out of it.
+    So this row is the shipped row with one extra step, and the difference between them is the
+    reranker and nothing else."""
+    def pick(ctx, texts, qvec, P, n_ctx=1, cap=96):
+        P.rerank_hits(ctx, depth)
+        return pick_top_chunk_dense(ctx, texts, qvec, P, cap=cap)
+    return pick
+
+
+# The baseline row is whatever the serving path currently does, and it moves when the serving
+# path moves -- otherwise every later variant is scored against a system that no longer
+# exists. It has moved twice: lexical choice -> dense sentence in the top chunk, and dense
+# sentence -> cross-encoder in front of it. Every cross-encoder row below ends in that same
+# dense top-1 sentence pick, so the only difference between them is the reordering.
+SHIPPED = "cross-encoder top 4 (shipped)"
 VARIANTS = {
-    "lexical sentence (shipped)": pick_lexical,
+    "lexical sentence, top 4": pick_lexical,
     "dense sentence, top 4": pick_dense,
-    "dense sentence, top 1": pick_top_chunk_dense,
+    "dense sentence, top 1, no rerank": pick_top_chunk_dense,
     "whole top chunk": pick_whole_top_chunk,
+    SHIPPED: pick_cross(4),
+    "cross-encoder top 8": pick_cross(8),
+    "cross-encoder top 20": pick_cross(20),
 }
 if os.getenv("WITH_LLM"):          # opt-in: each row is a paid API call per query
     VARIANTS["llm (harnessed)"] = pick_llm
@@ -147,7 +169,9 @@ def run(variant, queries, ix, texts, parents) -> dict:
         ctx = P.Ctx(q["query"], ix, trace, None)
         qvec = P.embed(q["query"], "query")
         P.retrieve(ctx, qvec)
-        P.rerank(ctx)
+        # the rerank STAGE is deliberately not called here: it reads RERANK from the
+        # environment, which would silently rerank every row including the baseline. The
+        # variants that want it call rerank_hits themselves, so the column measures it.
         text, cid = variant(ctx, texts, qvec, P)
         ms.append((now_ns() - t0) / NS_PER_MS)
         f1s.append(answer_f1(text, q["answer"]))
@@ -183,16 +207,19 @@ def main():
     n = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else DEFAULT_N
     queries = load_queries(n)
     ix, texts, parents = load_index(winner_dir())
+    if any(n.startswith("cross-encoder") for n in VARIANTS):
+        import service.pipeline as P
+        P.cross_encoder()      # 10 s of weight loading, outside the timed loop
     print(f"{len(queries)} held-out queries with human answers, index {winner_dir()}\n")
-    print(f"| {'variant':28} | answer F1 | cites gold | ms P50 |")
-    print(f"|{'-' * 30}|-----------|------------|--------|")
+    print(f"| {'variant':32} | answer F1 | cites gold | ms P50 |")
+    print(f"|{'-' * 34}|-----------|------------|--------|")
     rows = {}
     for name, fn in VARIANTS.items():
         r = run(fn, queries, ix, texts, parents)
         rows[name] = r
-        print(f"| {name:28} | {r['answer_f1']:9.3f} | {r['cites_gold']:10.1%} | "
+        print(f"| {name:32} | {r['answer_f1']:9.3f} | {r['cites_gold']:10.1%} | "
               f"{r['ms_p50']:6.1f} |", flush=True)
-    ship = "lexical sentence (shipped)"
+    ship = SHIPPED
     print(f"\npaired against what ships, 95% bootstrap CI over the same {len(queries)} queries:")
     verdicts = {}
     for name in VARIANTS:
@@ -201,7 +228,7 @@ def main():
         mean, lo, hi = paired_delta(rows[name]["per_query"], rows[ship]["per_query"])
         real = lo > 0 or hi < 0
         verdicts[name] = (mean, lo, hi, real)
-        print(f"  {name:28} {mean:+.4f} F1  [{lo:+.4f}, {hi:+.4f}]  "
+        print(f"  {name:32} {mean:+.4f} F1  [{lo:+.4f}, {hi:+.4f}]  "
               f"{'SIGNIFICANT' if real else 'indistinguishable from noise'}"
               f"   {rows[name]['ms_p50'] - rows[ship]['ms_p50']:+.1f} ms")
     winners = [n for n, (m, _, _, real) in verdicts.items() if real and m > 0]
