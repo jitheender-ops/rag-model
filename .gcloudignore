@@ -1,0 +1,29 @@
+# WITHOUT THIS FILE, `gcloud run deploy --source .` DERIVES ITS UPLOAD LIST FROM .gitignore
+# -- and .gitignore excludes artifacts/, which is the index. The build would then fail on
+# `COPY artifacts/d1/s7`, pointing at a Dockerfile line that is perfectly correct. This file
+# exists to say the opposite of .gitignore about exactly one directory.
+.git/
+.gitignore
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.DS_Store
+# keys are set with `gcloud run deploy --set-env-vars` / Secret Manager, never uploaded
+.env
+# gigabytes of source shards; the frozen corpus in data/ is what the index was built from
+data/raw/
+data/shards/
+data/audio/
+.backup-*/
+*.pdf
+# only the winning strategy ships. The other seven indexes are 420 MB of evidence for
+# reports/chunking.md, and the container serves exactly one of them -- the one
+# reports/chunking.json names.
+artifacts/*
+!artifacts/d1
+artifacts/d1/*
+!artifacts/d1/s7
+deploy/
+DEPLOY.md
+OBJECTIVE.md
