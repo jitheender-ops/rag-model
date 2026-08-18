@@ -168,6 +168,12 @@ button{font:inherit}
 .err{border:1.5px solid var(--refuse);background:var(--card);color:var(--refuse);
   padding:11px 13px;margin-bottom:18px}
 .err b{display:block}
+.diag{border:1px solid var(--rule);background:var(--card);padding:9px 12px;
+  margin-bottom:18px;color:var(--ink-2);font-size:.68rem}
+.diag div{display:flex;gap:9px}
+.diag b{color:var(--ink);font-weight:400}
+.diag .bad{color:var(--refuse)}
+.diag .good{color:var(--owned)}
 .foot{padding-top:10px;border-top:1px solid var(--rule);color:var(--ink-2);
   font-size:.67rem;display:flex;flex-wrap:wrap;gap:4px 16px}
 .foot a{color:var(--owned)}
@@ -223,6 +229,7 @@ button{font:inherit}
   says no.</p>
 
   <div id="errBox"></div>
+  <div class="diag" id="diag" hidden></div>
 
   <section class="inst" aria-labelledby="instT">
     <div class="inst-top">
@@ -429,6 +436,19 @@ function render(p){
 }
 
 function fail(t,d){ $("errBox").innerHTML = `<div class="err"><b>${esc(t)}</b>${esc(d)}</div>`; }
+
+// Every step of the microphone path, on screen. A silent failure is unreportable: the one
+// thing a person can say about it is "it does not work", which is where this started.
+let diagOn = false;
+function diag(msg, kind){
+  const d = $("diag");
+  if(!diagOn){ d.hidden = false; d.innerHTML = ""; diagOn = true; }
+  const row = document.createElement("div");
+  row.innerHTML = `<span class="${kind||""}">${kind==="bad"?"✕":kind==="good"?"✓":"·"}</span>`
+                + `<b>${esc(msg)}</b>`;
+  d.appendChild(row);
+}
+function diagReset(){ diagOn = false; }
 function busy(on, what){
   $("instNote").textContent = on ? what : "t0 = final transcript received · t1 = answer flushed";
   if(!on) return;
@@ -447,9 +467,16 @@ async function send(body, headers, what){
   try{
     const r = await fetch(API+"/ask", {method:"POST", body, headers});
     const p = await r.json();
-    if(!r.ok){ busy(false); return fail(`the server said ${r.status}`, p.error||""); }
+    if(!r.ok){
+      busy(false); diag(`/ask returned ${r.status}: ${p.error||""}`,"bad");
+      return fail(`the server said ${r.status}`, p.error||"");
+    }
+    if(p.transcript) diag(`transcribed: “${p.transcript}”`,"good");
     render(p);
-  }catch(e){ busy(false); fail("could not reach the backend", String(e.message||e)); }
+  }catch(e){
+    busy(false); diag(`request failed: ${e.message||e}`,"bad");
+    fail("could not reach the backend", String(e.message||e));
+  }
   finally{ $("instNote").textContent = "t0 = final transcript received · t1 = answer flushed"; }
 }
 
@@ -467,7 +494,7 @@ $("egs").addEventListener("click", e => {
 // `holding` is the source of truth, not `rec`: getUserMedia blocks on the permission prompt,
 // and a release during that wait used to stop a recorder that did not exist yet -- the mic
 // then stayed live and nothing was ever sent.
-let rec=null, chunks=[], holding=false, startedAt=0, ac=null, raf=0;
+let rec=null, chunks=[], holding=false, startedAt=0, ac=null, raf=0, rec_mime="";
 const MIN_MS = 350;
 
 function meter(stream){
@@ -494,31 +521,76 @@ function stopMeter(){
 }
 function resetMic(){ $("mic").setAttribute("aria-pressed","false"); $("micTxt").textContent="Hold to speak"; }
 
+// Safari and iOS produce audio/mp4 from MediaRecorder, not webm, and refuse a mimeType they
+// do not support rather than falling back. Ask for what this browser actually has.
+function pickMime(){
+  if(typeof MediaRecorder === "undefined") return null;
+  for(const t of ["audio/webm;codecs=opus","audio/webm","audio/mp4","audio/ogg;codecs=opus",""])
+    if(t === "" || MediaRecorder.isTypeSupported?.(t)) return t;
+  return "";
+}
+
 async function startRec(){
   if(rec || holding) return;
-  holding = true; $("errBox").innerHTML=""; $("micTxt").textContent="Starting…";
-  if(!navigator.mediaDevices?.getUserMedia){
-    holding=false; resetMic();
-    return fail("this browser has no microphone API","Type the question instead.");
+  holding = true; $("errBox").innerHTML=""; diagReset();
+  $("micTxt").textContent="Starting…";
+  if(!window.isSecureContext){
+    holding=false; resetMic(); diag("page is not on https — browsers block the mic","bad");
+    return fail("the microphone needs a secure page","Open the https:// address, not http://.");
+  }
+  if(!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined"){
+    holding=false; resetMic(); diag("this browser has no MediaRecorder/getUserMedia","bad");
+    return fail("this browser cannot record audio","Type the question instead.");
   }
   let stream;
-  try{ stream = await navigator.mediaDevices.getUserMedia({audio:true}); }
-  catch{ holding=false; resetMic();
-    return fail("the microphone was not available","Allow mic access, or type the question."); }
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    diag("microphone granted","good");
+  }catch(e){
+    holding=false; resetMic();
+    diag(`getUserMedia refused: ${e.name || e}`,"bad");
+    return fail("the microphone was not available",
+                e.name === "NotAllowedError"
+                  ? "Permission was denied. Allow the mic for this site in the address bar, then try again."
+                  : "Allow mic access, or type the question instead.");
+  }
   if(!holding){ stream.getTracks().forEach(t=>t.stop()); return resetMic(); }
-  chunks = []; rec = new MediaRecorder(stream);
+  const mime = pickMime();
+  chunks = [];
+  try{
+    rec = mime ? new MediaRecorder(stream, {mimeType: mime}) : new MediaRecorder(stream);
+  }catch(e){
+    holding=false; stream.getTracks().forEach(t=>t.stop()); resetMic();
+    diag(`MediaRecorder rejected ${mime}: ${e.name||e}`,"bad");
+    return fail("this browser refused to start a recorder","Type the question instead.");
+  }
+  diag(`recording as ${rec.mimeType || mime || "default"}`);
   rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onerror = e => diag(`recorder error: ${e.error?.name || "unknown"}`,"bad");
   rec.onstop = () => {
     stream.getTracks().forEach(t=>t.stop()); stopMeter();
     const held = Date.now()-startedAt; rec = null; resetMic();
-    if(!chunks.length || held < MIN_MS)
-      return fail("that clip was too short to transcribe","Hold the button while you speak, then release.");
+    const bytes = chunks.reduce((n,c)=>n+c.size,0);
+    diag(`held ${held} ms · captured ${(bytes/1024).toFixed(1)} KB in ${chunks.length} chunk(s)`,
+         bytes ? "good" : "bad");
+    if(!chunks.length || !bytes || held < MIN_MS){
+      diag("nothing to send","bad");
+      return fail("that clip was too short to transcribe",
+                  "Press and HOLD the button while you speak, then release.");
+    }
+    const type = chunks[0].type || rec_mime || "audio/webm";
+    const ext = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm";
     const fd = new FormData();
-    fd.append("audio", new Blob(chunks,{type:chunks[0].type||"audio/webm"}), "clip.webm");
+    fd.append("audio", new Blob(chunks,{type}), "clip." + ext);
+    diag(`sending clip.${ext} to /ask …`);
     send(fd, undefined, "transcribing, then measuring…");
   };
-  startedAt = Date.now(); rec.start();
-  try{ meter(stream); }catch{}
+  startedAt = Date.now();
+  try{ rec.start(); }
+  catch(e){ holding=false; resetMic(); diag(`start() failed: ${e.name||e}`,"bad");
+            return fail("recording could not start", String(e.message||e)); }
+  rec_mime = rec.mimeType || mime;
+  try{ meter(stream); }catch(e){ diag("level meter unavailable (harmless)"); }
   $("mic").setAttribute("aria-pressed","true"); $("micTxt").textContent="Listening";
 }
 function stopRec(){
