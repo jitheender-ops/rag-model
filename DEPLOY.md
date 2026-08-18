@@ -20,9 +20,43 @@ ls artifacts/d1/s7/index.npy                  # must exist, ~18 MB
 back to `artifacts/d1/s2`, an index the image does not carry, and exits at boot naming a
 directory nobody put there.
 
+## Modal — free, and the one that actually stays free
+
+`$30/month` of credits on the Starter plan, **no credit card**, OAuth signup. The box scales
+to zero, so you are billed only for the seconds a container is actually up: 2 cores and 4 GiB
+is about **$0.13/hour of active time**, which makes a half-hour demo cost roughly six cents.
+You would need ~230 hours of traffic in a month to spend the credit.
+
+```bash
+# 1. sign up at modal.com with GitHub or Google, then once, on your machine:
+pip install modal && modal setup          # opens a browser; no card on Starter
+
+# 2. the Sarvam key, as a secret -- never in the repo, never in the image
+modal secret create sarvam SARVAM_API_KEY=...     # empty value is fine if you have none
+
+# 3. deploy
+make modal                                # or: modal deploy modal_app.py
+```
+
+That prints the public URL. First deploy takes ~10 minutes, nearly all of it the CPU torch
+wheel and the 600 MB of weights being baked into the image; redeploys are seconds.
+
+**The cold start is the trade.** Nothing runs between visits, so the first visitor after an
+idle period waits while the container boots and loads the models. That wait is not the 200 ms
+this repo measures — `t0` is the instant a *warm* server receives a final transcript — and the
+page shows a *waking up* state while `/health` still says `loading`. `scaledown_window=300`
+keeps the box alive for five minutes between questions, so only the first one pays it. If you
+are about to demo, ask it one question a minute beforehand and it will be warm.
+
+`modal_app.py` and the `Dockerfile` describe the same box deliberately — same CPU torch wheel,
+same two models baked in, same files, same entrypoint. Neither generates the other, so if you
+change one, change both.
+
 ## Hugging Face Spaces
 
-Free, no card, 16 GB RAM, and it sleeps after long idleness — a cold visitor waits about
+**No longer free**: Docker and Gradio Spaces now require a PRO subscription ($9/month)
+regardless of hardware; only *static* Spaces remain free. If you have PRO, this gives 16 GB
+RAM, and it sleeps after long idleness — a cold visitor waits about
 30 seconds for the models to load, and the page shows a *waking up* state while `/health`
 still says `loading`. That wait is model loading, not the pipeline: the 200 ms the reports
 measure is `t0 → t1` inside a request, and every request the page shows you is measured after

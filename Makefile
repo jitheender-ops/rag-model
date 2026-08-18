@@ -9,7 +9,7 @@ CLIPS ?= data/audio
 PORT ?= 8000
 N ?= 300
 
-.PHONY: all corpus chunking calibrate latency guardrails demo serve tune llm-probe stt legs ann verify-tune submit check venv clean
+.PHONY: all corpus chunking calibrate latency guardrails demo serve tune llm-probe stt legs ann verify-tune modal submit check venv clean
 
 all: submit
 
@@ -43,6 +43,10 @@ ann:
 ## gate 4, both verifiers, on the same 280 rows -> reports/verify.md
 verify-tune:
 	$(PY) d4/verify_tune.py
+
+## the live site: page and API on one origin, scaled to zero. `modal setup` first.
+modal:
+	$(PYBIN) -m modal deploy modal_app.py
 
 ## ask one question through the serving path and watch the clock
 ## make demo Q="..."   |   make demo AUDIO=data/audio/clip.wav
