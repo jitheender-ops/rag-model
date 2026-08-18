@@ -3,276 +3,357 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mic RAG — the 200 ms window</title>
+<title>MIC·RAG — Verna Visionaries · HH Goa 2026 Task 2</title>
+<meta name="description" content="Voice in, grounded answer out, inside a measured 200 ms window. Hindi, Tamil, Bengali, English.">
 <style>
 :root{
-  --paper:#E8ECEE; --card:#F2F5F6; --sunk:#DDE3E6; --ink:#101619; --ink-2:#47555C;
-  --rule:#C3CCD1; --rule-2:#D8DFE2;
-  --owned:#0A6E86; --owned-soft:#0A6E8618;
-  --vendor:#8A6A18; --vendor-soft:#8A6A1818;
-  --refuse:#8C2F3B;
-  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  /* Goa at dusk: palm shadow, low sun, sea. Carried over from the HH Goa build so this
+     reads as the same team's work, not a different project wearing its name. */
+  --night:#04120C; --deep:#081C13; --panel:#0C2318; --sunk:#061710;
+  --ink:#EAF3EC; --ink-2:#8FA79A; --line:#1B3A2A; --line-2:#122A1E;
+  --gold:#F5C518;      /* inside the budget: ours, measured, lit */
+  --amber:#FF8C42;     /* the vendor's clock, outside the walls */
+  --pink:#E83E8C;      /* an abstention. A result, not an error. */
+  --sea:#2BB3A3;
+  --disp:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
   --serif:Charter,"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
 }
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
-  --paper:#0C1215; --card:#131C20; --sunk:#0A0F12; --ink:#DFE7EA; --ink-2:#8B9BA2;
-  --rule:#28353A; --rule-2:#1B2428;
-  --owned:#3FB6D2; --owned-soft:#3FB6D21f; --vendor:#C79A34; --vendor-soft:#C79A341f;
-  --refuse:#D2707C;
-}}
 *{box-sizing:border-box;margin:0;padding:0}
-html{-webkit-text-size-adjust:100%}
-body{background:var(--paper);color:var(--ink);font-family:var(--mono);
-  font-size:clamp(.72rem,.68rem + .2vw,.8rem);line-height:1.5;
-  padding:clamp(12px,2.5vw,26px);
-  background-image:linear-gradient(var(--rule-2) 1px,transparent 1px),
-                   linear-gradient(90deg,var(--rule-2) 1px,transparent 1px);
-  background-size:28px 28px;background-position:-1px -1px}
-.wrap{max-width:1060px;margin:0 auto}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+body{
+  background:var(--night); color:var(--ink); font-family:var(--mono);
+  font-size:clamp(.72rem,.68rem + .2vw,.8rem); line-height:1.5; overflow-x:hidden;
+  /* azulejo: the Portuguese tile Goa is tiled with, and a measurement grid at the same
+     time. One motif doing both jobs, which is the whole idea of this page. */
+  background-image:
+    radial-gradient(circle at 50% 50%, transparent 62%, rgba(43,179,163,.055) 63% 66%, transparent 67%),
+    radial-gradient(circle at 0% 0%,   transparent 62%, rgba(43,179,163,.045) 63% 66%, transparent 67%),
+    radial-gradient(circle at 100% 100%,transparent 62%, rgba(43,179,163,.045) 63% 66%, transparent 67%),
+    linear-gradient(var(--line-2) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line-2) 1px, transparent 1px),
+    radial-gradient(120% 70% at 50% -10%, rgba(245,197,24,.10), transparent 60%);
+  background-size:56px 56px,56px 56px,56px 56px,56px 56px,56px 56px,100% 620px;
+  background-repeat:repeat,repeat,repeat,repeat,repeat,no-repeat;
+}
+.wrap{max-width:1120px;margin:0 auto;padding:0 clamp(14px,3vw,30px)}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
-:focus-visible{outline:2px solid var(--owned);outline-offset:2px}
+:focus-visible{outline:2px solid var(--gold);outline-offset:3px}
 button{font:inherit}
+a{color:var(--sea)}
 
-/* masthead ------------------------------------------------------------- */
-.top{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:baseline;
-  border-bottom:2px solid var(--ink);padding-bottom:8px}
-.mark{font-size:1.05rem;font-weight:700;letter-spacing:-.04em}
-.mark b{color:var(--owned)}
-.top .sub{color:var(--ink-2)}
-.state{margin-left:auto;display:flex;gap:7px;align-items:center;color:var(--ink-2)}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--ink-2);flex:none}
-.dot.ok{background:var(--owned)}
-.dot.warm{background:var(--vendor);animation:blink 1.4s ease-in-out infinite}
-.dot.down{background:var(--refuse)}
-@keyframes blink{50%{opacity:.2}}
+/* ticker ---------------------------------------------------------------- */
+.tick-bar{border-bottom:1px solid var(--line);background:rgba(4,18,12,.86);
+  backdrop-filter:blur(6px);position:sticky;top:0;z-index:30;overflow:hidden}
+.tick-run{display:flex;gap:34px;white-space:nowrap;padding:7px 0;
+  animation:run 34s linear infinite;font-size:.66rem;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--ink-2);width:max-content}
+.tick-run b{color:var(--gold);font-weight:600}
+.tick-run i{color:var(--sea);font-style:normal}
+@keyframes run{to{transform:translateX(-50%)}}
+.tick-bar:hover .tick-run{animation-play-state:paused}
 
-.lede{font-family:var(--serif);font-size:clamp(.95rem,.9rem + .4vw,1.14rem);
-  line-height:1.5;max-width:64ch;color:var(--ink-2);margin:16px 0 18px}
-.lede em{color:var(--ink);font-style:normal;box-shadow:inset 0 -1px 0 var(--owned)}
+/* hero ------------------------------------------------------------------ */
+.hero{padding:clamp(30px,7vh,72px) 0 clamp(22px,4vh,40px)}
+.badges{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:22px}
+.badge{border:1px solid var(--line);padding:5px 11px;font-size:.63rem;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--ink-2)}
+.badge.team{border-color:var(--gold);color:var(--gold)}
+.badge.live{border-color:var(--sea);color:var(--sea);display:flex;gap:7px;align-items:center}
+.badge.live i{width:6px;height:6px;border-radius:50%;background:var(--sea);
+  animation:pulse 1.8s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.25}}
+h1{font-family:var(--disp);font-weight:800;letter-spacing:-.045em;line-height:.92;
+  font-size:clamp(2.5rem,10vw,6.6rem);text-transform:uppercase;margin-bottom:20px}
+h1 span{display:block}
+h1 .lit{background:linear-gradient(96deg,var(--gold),var(--amber) 62%,var(--pink));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+h1 .thin{font-weight:300;color:var(--ink-2);letter-spacing:-.02em}
+.kicker{font-family:var(--serif);font-size:clamp(1rem,.92rem + .5vw,1.3rem);line-height:1.5;
+  max-width:60ch;color:var(--ink-2)}
+.kicker em{color:var(--ink);font-style:normal;box-shadow:inset 0 -2px 0 var(--gold)}
 
-/* measured strip -------------------------------------------------------- */
-.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));
-  border:1px solid var(--rule);background:var(--card);margin-bottom:24px}
-.fact{padding:9px 12px;border-right:1px solid var(--rule-2)}
+/* facts ----------------------------------------------------------------- */
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));
+  border:1px solid var(--line);border-bottom:0;margin:36px 0 0;background:var(--deep)}
+.fact{padding:16px 16px;border-right:1px solid var(--line-2);border-bottom:1px solid var(--line)}
 .fact:last-child{border-right:0}
-.fact b{display:block;font-size:1.02rem;color:var(--owned);letter-spacing:-.02em}
-.fact span{color:var(--ink-2);font-size:.66rem}
+.fact b{display:block;font-family:var(--disp);font-weight:700;font-size:1.5rem;
+  letter-spacing:-.03em;color:var(--gold);line-height:1.05}
+.fact span{color:var(--ink-2);font-size:.64rem;letter-spacing:.06em;text-transform:uppercase}
+
+/* sections -------------------------------------------------------------- */
+section{padding:clamp(28px,5vh,52px) 0}
+.eyebrow{display:flex;align-items:baseline;gap:12px;margin-bottom:18px;
+  font-size:.63rem;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-2)}
+.eyebrow s{flex:1;height:1px;background:var(--line);text-decoration:none}
+.eyebrow b{color:var(--gold);font-weight:600}
+.reveal{opacity:0;transform:translateY(14px);transition:opacity .7s ease,transform .7s ease}
+.reveal.in{opacity:1;transform:none}
 
 /* ask ------------------------------------------------------------------- */
-.ask{display:flex;flex-wrap:wrap;gap:9px;margin-bottom:10px}
-.field{flex:1 1 320px;display:flex;border:1.5px solid var(--ink);background:var(--card)}
+.ask{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px}
+.field{flex:1 1 320px;display:flex;border:1px solid var(--line);background:var(--deep)}
 .field input{flex:1;border:0;background:transparent;color:var(--ink);font:inherit;
-  padding:11px 13px;min-width:0}
+  padding:14px 15px;min-width:0}
 .field input::placeholder{color:var(--ink-2)}
-.field button{border:0;border-left:1.5px solid var(--rule);background:transparent;
-  color:var(--ink);padding:0 16px;cursor:pointer}
-.field button:hover{background:var(--owned);color:var(--paper)}
-.mic{border:1.5px solid var(--ink);background:var(--ink);color:var(--paper);
-  padding:0 18px;cursor:pointer;display:flex;gap:10px;align-items:center;
-  text-transform:uppercase;font-size:.7rem;font-weight:700;letter-spacing:.05em;
-  min-height:44px;touch-action:none}
-.mic:hover{background:var(--owned);border-color:var(--owned)}
-.mic[aria-pressed="true"]{background:var(--refuse);border-color:var(--refuse)}
+.field button{border:0;border-left:1px solid var(--line);background:transparent;
+  color:var(--gold);padding:0 20px;cursor:pointer;letter-spacing:.1em;
+  text-transform:uppercase;font-size:.68rem}
+.field button:hover{background:var(--gold);color:var(--night)}
+.mic{border:1px solid var(--gold);background:var(--gold);color:var(--night);
+  padding:0 20px;cursor:pointer;display:flex;gap:11px;align-items:center;min-height:48px;
+  text-transform:uppercase;font-size:.68rem;font-weight:700;letter-spacing:.1em;
+  touch-action:none}
+.mic:hover{background:var(--amber);border-color:var(--amber)}
+.mic[aria-pressed="true"]{background:var(--pink);border-color:var(--pink);color:#fff}
 .mic .bulb{width:9px;height:9px;border-radius:50%;background:currentColor;flex:none}
-.mic[aria-pressed="true"] .bulb{animation:blink .9s steps(2,end) infinite}
-.meter{width:74px;height:22px;display:none}
+.mic[aria-pressed="true"] .bulb{animation:pulse .9s steps(2,end) infinite}
+.meter{width:78px;height:24px;display:none}
 .mic[aria-pressed="true"] .meter{display:block}
 
-.egs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
-.egs button{font-size:.7rem;color:var(--ink);background:var(--card);
-  border:1px solid var(--rule);padding:5px 10px;cursor:pointer;display:flex;gap:7px}
-.egs button:hover{border-color:var(--owned);color:var(--owned)}
-.egs button i{font-style:normal;color:var(--ink-2);font-size:.62rem}
-.egs button.stop:hover{border-color:var(--refuse);color:var(--refuse)}
-.note{color:var(--ink-2);font-size:.7rem;max-width:72ch;margin-bottom:22px}
+.egs{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}
+.egs button{font-size:.68rem;color:var(--ink);background:var(--deep);border:1px solid var(--line);
+  padding:7px 12px;cursor:pointer;display:flex;gap:8px;align-items:baseline}
+.egs button:hover{border-color:var(--gold);color:var(--gold)}
+.egs button i{font-style:normal;color:var(--ink-2);font-size:.6rem;letter-spacing:.1em;
+  text-transform:uppercase}
+.egs button.stop:hover{border-color:var(--pink);color:var(--pink)}
+.note{color:var(--ink-2);font-size:.7rem;max-width:74ch}
 
-/* the ruler ------------------------------------------------------------- */
-.inst{border:1.5px solid var(--ink);background:var(--card);margin-bottom:20px}
-.inst-top{display:flex;flex-wrap:wrap;gap:5px 14px;align-items:baseline;padding:9px 13px;
-  border-bottom:1px solid var(--rule);color:var(--ink-2)}
-.inst-top strong{color:var(--ink);text-transform:uppercase;font-size:.7rem;letter-spacing:.06em}
-.tot{margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums}
-.tot.in{color:var(--owned)} .tot.out{color:var(--refuse)} .tot.idle{color:var(--ink-2)}
-
-.clip{position:relative;overflow:hidden;padding:46px 0 10px}
-.track{position:relative;height:44px;margin:0 21%;background:var(--sunk);
-  border-left:2px solid var(--ink);border-right:2px solid var(--ink)}
-.tick{position:absolute;top:0;bottom:0;width:1px;background:var(--rule)}
-.tick s{position:absolute;top:-18px;left:50%;transform:translateX(-50%);
-  text-decoration:none;color:var(--ink-2);font-size:.62rem}
-.wall{position:absolute;top:-40px;font-size:.62rem;font-weight:700;letter-spacing:.05em;
-  color:var(--ink);white-space:nowrap}
+/* instrument ------------------------------------------------------------ */
+.inst{border:1px solid var(--line);background:var(--deep)}
+.inst-top{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline;padding:12px 15px;
+  border-bottom:1px solid var(--line);color:var(--ink-2)}
+.inst-top strong{color:var(--ink);text-transform:uppercase;font-size:.66rem;letter-spacing:.16em}
+.tot{margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums;font-size:.85rem}
+.tot.in{color:var(--gold)} .tot.out{color:var(--pink)} .tot.idle{color:var(--ink-2)}
+.clip{position:relative;overflow:hidden;padding:50px 0 12px}
+.track{position:relative;height:52px;margin:0 21%;background:var(--sunk);
+  border-left:2px solid var(--gold);border-right:2px solid var(--gold)}
+.tick{position:absolute;top:0;bottom:0;width:1px;background:var(--line)}
+.tick s{position:absolute;top:-19px;left:50%;transform:translateX(-50%);text-decoration:none;
+  color:var(--ink-2);font-size:.6rem}
+.wall{position:absolute;top:-42px;font-size:.6rem;font-weight:700;letter-spacing:.14em;
+  color:var(--gold);white-space:nowrap;text-transform:uppercase}
 .wall.l{left:0;transform:translateX(-50%)} .wall.r{right:0;transform:translateX(50%)}
 .bars{position:absolute;inset:0;display:flex}
-.seg{background:var(--owned);border-right:1px solid var(--card);min-width:0;
-  transition:width .45s cubic-bezier(.22,1,.36,1)}
-.seg:nth-child(2n){filter:brightness(.84)}
+/* the sunset ramp: each stage a step further into the evening */
+.seg{background:var(--gold);border-right:1px solid var(--deep);min-width:0;
+  transition:width .5s cubic-bezier(.22,1,.36,1)}
+.seg:nth-child(2){background:#F0B41E}
+.seg:nth-child(3){background:#EAA32A}
+.seg:nth-child(4){background:#E39236}
+.seg:nth-child(5){background:var(--amber)}
+.seg:nth-child(6){background:#F2793F}
 .seg:last-child{border-right:0}
-.leg{position:absolute;top:0;height:44px;display:flex;align-items:center;
-  background:repeating-linear-gradient(-45deg,var(--vendor-soft),var(--vendor-soft) 6px,
+.leg{position:absolute;top:0;height:52px;display:flex;align-items:center;white-space:nowrap;
+  background:repeating-linear-gradient(-45deg,rgba(255,140,66,.16),rgba(255,140,66,.16) 6px,
     transparent 6px,transparent 12px);
-  border-top:1px dashed var(--vendor);border-bottom:1px dashed var(--vendor);
-  color:var(--vendor);white-space:nowrap}
-.leg.stt{right:100%;padding-left:9px}
-.leg.tts{left:100%;justify-content:flex-end;padding-right:9px}
-.leg b{background:var(--card);padding:1px 5px;font-size:.65rem}
-.leg.off{opacity:.32}
-
-.legend{display:flex;flex-wrap:wrap;gap:4px 16px;padding:9px 13px;
-  border-top:1px solid var(--rule);color:var(--ink-2);font-size:.67rem}
-.legend span{display:flex;gap:6px;align-items:center}
-.sw{width:11px;height:11px;flex:none;border:1px solid var(--ink)}
-.sw.o{background:var(--owned)}
-.sw.v{background:var(--vendor-soft);border-style:dashed;border-color:var(--vendor)}
-.stages{display:flex;flex-wrap:wrap;padding:2px 13px 11px;gap:0 2px}
-.stg{display:flex;gap:7px;align-items:baseline;padding:3px 10px 3px 0;
-  border-right:1px solid var(--rule-2);color:var(--ink-2)}
+  border-top:1px dashed var(--amber);border-bottom:1px dashed var(--amber);color:var(--amber)}
+.leg.stt{right:100%;padding-left:10px}
+.leg.tts{left:100%;justify-content:flex-end;padding-right:10px}
+.leg b{background:var(--deep);padding:2px 6px;font-size:.63rem}
+.leg.off{opacity:.3}
+.legend{display:flex;flex-wrap:wrap;gap:5px 18px;padding:11px 15px;border-top:1px solid var(--line);
+  color:var(--ink-2);font-size:.65rem}
+.legend span{display:flex;gap:7px;align-items:center}
+.sw{width:11px;height:11px;flex:none}
+.sw.o{background:var(--gold)}
+.sw.v{border:1px dashed var(--amber);background:rgba(255,140,66,.16)}
+.stages{display:flex;flex-wrap:wrap;padding:3px 15px 13px}
+.stg{display:flex;gap:8px;align-items:baseline;padding:4px 12px 4px 0;
+  border-right:1px solid var(--line-2);color:var(--ink-2)}
 .stg:last-child{border-right:0}
 .stg b{color:var(--ink);font-variant-numeric:tabular-nums}
-.stg.dim b{color:var(--vendor)}
-.stg.skip{opacity:.5}
+.stg.dim b{color:var(--amber)}
+.stg.skip{opacity:.45}
 .stg.skip b{color:var(--ink-2);font-weight:400;font-style:italic}
 
 /* result ---------------------------------------------------------------- */
-.res{border:1.5px solid var(--ink);background:var(--card);margin-bottom:20px}
-.res[data-s="abstained"]{border-color:var(--refuse)}
+.res{border:1px solid var(--line);background:var(--deep);margin-top:18px}
+.res[data-s="answered"]{border-color:var(--gold)}
+.res[data-s="abstained"]{border-color:var(--pink)}
 .res[data-s="busy"]{border-style:dashed}
-.res-top{padding:9px 13px;border-bottom:1px solid var(--rule);color:var(--ink-2);
-  display:flex;flex-wrap:wrap;gap:5px 14px;text-transform:uppercase;
-  font-size:.7rem;letter-spacing:.06em}
-.res[data-s="abstained"] .res-top{color:var(--refuse);border-color:var(--refuse)}
-.ans{font-family:var(--serif);font-size:clamp(1.12rem,1rem + 1vw,1.55rem);line-height:1.4;
-  padding:19px 20px 6px}
+.res-top{padding:11px 15px;border-bottom:1px solid var(--line);color:var(--ink-2);
+  display:flex;flex-wrap:wrap;gap:6px 16px;text-transform:uppercase;font-size:.64rem;
+  letter-spacing:.14em}
+.res[data-s="abstained"] .res-top{color:var(--pink);border-color:var(--pink)}
+.res[data-s="answered"] .res-top{color:var(--gold);border-color:var(--gold)}
+.ans{font-family:var(--serif);font-size:clamp(1.18rem,1rem + 1.2vw,1.75rem);line-height:1.38;
+  padding:24px 22px 8px}
 .res[data-s="busy"] .ans{color:var(--ink-2)}
-.why{padding:0 20px 17px;color:var(--ink-2);max-width:72ch}
-.why code{background:var(--owned-soft);padding:1px 5px;color:var(--ink)}
-.why a{color:var(--owned)}
-.res[data-s="abstained"] .why code{background:transparent;color:var(--refuse);
-  box-shadow:inset 0 -1px 0 var(--refuse)}
+.why{padding:0 22px 20px;color:var(--ink-2);max-width:74ch}
+.why code{background:rgba(245,197,24,.12);padding:1px 6px;color:var(--gold)}
+.why a{color:var(--gold)}
+.res[data-s="abstained"] .why code{background:rgba(232,62,140,.12);color:var(--pink)}
 
-/* citations ------------------------------------------------------------- */
-.cites{border:1px solid var(--rule);background:var(--card);margin-bottom:20px}
-.cites-top{padding:9px 13px;border-bottom:1px solid var(--rule);color:var(--ink-2);
-  text-transform:uppercase;font-size:.7rem;letter-spacing:.06em;
-  display:flex;gap:12px;flex-wrap:wrap}
-.src{padding:11px 13px;border-top:1px solid var(--rule-2)}
+.cites{border:1px solid var(--line);background:var(--deep);margin-top:18px}
+.cites-top{padding:11px 15px;border-bottom:1px solid var(--line);color:var(--ink-2);
+  text-transform:uppercase;font-size:.64rem;letter-spacing:.14em;display:flex;gap:14px;flex-wrap:wrap}
+.src{padding:13px 15px;border-top:1px solid var(--line-2)}
 .src:first-child{border-top:0}
-.src.win{background:var(--owned-soft);border-left:2px solid var(--owned)}
-.src-h{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;color:var(--ink-2);
-  font-size:.65rem;margin-bottom:5px}
-.src-h b{color:var(--owned);word-break:break-all}
-.src-h em{font-style:normal;color:var(--ink);text-transform:uppercase;letter-spacing:.05em}
-.src p{font-family:var(--serif);font-size:.92rem;line-height:1.45;color:var(--ink-2)}
+.src.win{background:rgba(245,197,24,.05);border-left:2px solid var(--gold)}
+.src-h{display:flex;flex-wrap:wrap;gap:5px 12px;align-items:baseline;color:var(--ink-2);
+  font-size:.63rem;margin-bottom:6px}
+.src-h b{color:var(--sea);word-break:break-all}
+.src-h em{font-style:normal;color:var(--gold);text-transform:uppercase;letter-spacing:.12em}
+.src p{font-family:var(--serif);font-size:.94rem;line-height:1.45;color:var(--ink-2)}
 .src.win p{color:var(--ink)}
 
-.err{border:1.5px solid var(--refuse);background:var(--card);color:var(--refuse);
-  padding:11px 13px;margin-bottom:18px}
+.err{border:1px solid var(--pink);background:rgba(232,62,140,.07);color:var(--pink);
+  padding:13px 15px;margin-bottom:16px}
 .err b{display:block}
-.diag{border:1px solid var(--rule);background:var(--card);padding:9px 12px;
-  margin-bottom:18px;color:var(--ink-2);font-size:.68rem}
-.diag div{display:flex;gap:9px}
+.diag{border:1px solid var(--line);background:var(--sunk);padding:11px 14px;margin-bottom:16px;
+  color:var(--ink-2);font-size:.66rem}
+.diag div{display:flex;gap:10px}
 .diag b{color:var(--ink);font-weight:400}
-.diag .bad{color:var(--refuse)}
-.diag .good{color:var(--owned)}
-.foot{padding-top:10px;border-top:1px solid var(--rule);color:var(--ink-2);
-  font-size:.67rem;display:flex;flex-wrap:wrap;gap:4px 16px}
-.foot a{color:var(--owned)}
-@media (max-width:760px){.track{margin:0 11%}.clip{padding-top:42px}}
-@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+.diag .bad{color:var(--pink)} .diag .good{color:var(--sea)}
+
+/* requirements ---------------------------------------------------------- */
+.reqs{display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));
+  border:1px solid var(--line);border-bottom:0}
+.req{padding:16px;border-right:1px solid var(--line-2);border-bottom:1px solid var(--line);
+  background:var(--deep)}
+.req u{text-decoration:none;color:var(--gold);font-size:.62rem;letter-spacing:.18em}
+.req h3{font-family:var(--disp);font-size:.94rem;font-weight:700;letter-spacing:-.01em;
+  margin:5px 0 7px;color:var(--ink)}
+.req p{color:var(--ink-2);font-size:.7rem;line-height:1.55}
+.req p b{color:var(--sea);font-weight:400}
+
+footer{border-top:1px solid var(--line);margin-top:20px;padding:26px 0 40px;color:var(--ink-2);
+  font-size:.65rem;display:flex;flex-wrap:wrap;gap:8px 22px;align-items:baseline}
+footer .sig{margin-left:auto;color:var(--gold);letter-spacing:.18em;text-transform:uppercase}
+@media (max-width:760px){.track{margin:0 11%}.clip{padding-top:46px}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}
+  .reveal{opacity:1;transform:none}}
 </style>
 </head>
 <body>
+<div class="tick-bar"><div class="tick-run" id="tickRun"></div></div>
 <div class="wrap">
 
-  <header class="top">
-    <span class="mark">MIC<b>·</b>RAG</span>
-    <span class="sub">voice → retrieval → grounded answer · hi / ta / bn / en</span>
-    <span class="state"><i class="dot" id="dot"></i><span id="stateTxt">checking the index…</span></span>
+  <header class="hero">
+    <div class="badges">
+      <span class="badge">HH Goa 2026</span>
+      <span class="badge">Task 2 · Voice RAG</span>
+      <span class="badge team">Team Verna Visionaries</span>
+      <span class="badge live"><i></i><span id="stateTxt">checking the index…</span></span>
+    </div>
+    <h1><span class="thin">voice in.</span><span class="lit">grounded answer</span>
+        <span>out in 200 ms.</span></h1>
+    <p class="kicker">Speak in Hindi, Tamil, Bengali or English. The bar below is a
+      <em>200 millisecond ruler</em>, drawn to scale — everything this system owns fits
+      between its walls. Speech-to-text and speech-back belong to a vendor's clock, so they
+      are drawn <em>outside</em> the walls at the same scale, which is why they run off the
+      screen.</p>
+
+    <div class="facts">
+      <div class="fact"><b>45.2<small>ms</small></b><span>P50 · 1500/1500 in budget</span></div>
+      <div class="fact"><b>8</b><span>chunking strategies</span></div>
+      <div class="fact"><b>0.892</b><span>recall@50 · human qrels</span></div>
+      <div class="fact"><b>84<small>%</small></b><span>correct abstention · 3.8% false</span></div>
+      <div class="fact"><b id="fChunks">12,024</b><span>chunks · MSMARCO-XI</span></div>
+    </div>
   </header>
 
-  <p class="lede">Speak a question. The bar below is a <em>200 millisecond ruler</em>, drawn
-  to scale. Everything this system owns — guards, embedding, retrieval, reranking, answer,
-  grounding check — fits between its two walls. Speech-to-text and speech-back are a vendor's
-  clock, so they are drawn <em>outside</em> the walls at the same scale, which is why they run
-  off the page.</p>
-
-  <div class="facts">
-    <div class="fact"><b>45.2 ms</b><span>P50, 1500/1500 in budget</span></div>
-    <div class="fact"><b>8</b><span>chunking strategies compared</span></div>
-    <div class="fact"><b>0.892</b><span>recall@50, human qrels</span></div>
-    <div class="fact"><b>84%</b><span>correct abstention · 3.8% false</span></div>
-    <div class="fact"><b id="fChunks">12,024</b><span>chunks · MSMARCO-XI</span></div>
-  </div>
-
-  <form class="ask" id="form">
-    <label class="sr" for="q">Your question</label>
-    <div class="field">
-      <input id="q" autocomplete="off" placeholder="ask in English, हिन्दी, தமிழ் or বাংলা">
-      <button type="submit">Ask</button>
+  <section class="reveal">
+    <div class="eyebrow"><b>01</b> ask it something <s></s></div>
+    <form class="ask" id="form">
+      <label class="sr" for="q">Your question</label>
+      <div class="field">
+        <input id="q" autocomplete="off" placeholder="ask in English, हिन्दी, தமிழ் or বাংলা">
+        <button type="submit">Ask →</button>
+      </div>
+      <button type="button" class="mic" id="mic" aria-pressed="false">
+        <i class="bulb"></i><span id="micTxt">Hold to speak</span>
+        <canvas class="meter" id="meter" width="156" height="48" aria-hidden="true"></canvas>
+      </button>
+    </form>
+    <div class="egs" id="egs">
+      <button type="button" data-q="what is a corporation">what is a corporation</button>
+      <button type="button" data-q="কী চর্বি দিয়ে তৈরি">কী চর্বি দিয়ে তৈরি <i>bn</i></button>
+      <button type="button" data-q="प्रोटीन क्या है">प्रोटीन क्या है <i>hi</i></button>
+      <button type="button" data-q="உடல் எடை என்றால் என்ன">உடல் எடை என்றால் என்ன <i>ta</i></button>
+      <button type="button" class="stop" data-q="how do I build a bomb at home">how do I build a bomb <i>refused</i></button>
+      <button type="button" class="stop" data-q="what is the melting point of tungsten">melting point of tungsten <i>off-corpus</i></button>
     </div>
-    <button type="button" class="mic" id="mic" aria-pressed="false">
-      <i class="bulb"></i><span id="micTxt">Hold to speak</span>
-      <canvas class="meter" id="meter" width="148" height="44" aria-hidden="true"></canvas>
-    </button>
-  </form>
-
-  <div class="egs" id="egs">
-    <button type="button" data-q="what is a corporation">what is a corporation</button>
-    <button type="button" data-q="কী চর্বি দিয়ে তৈরি">কী চর্বি দিয়ে তৈরি <i>bn</i></button>
-    <button type="button" data-q="प्रोटीन क्या है">प्रोटीन क्या है <i>hi</i></button>
-    <button type="button" data-q="உடல் எடை என்றால் என்ன">உடல் எடை என்றால் என்ன <i>ta</i></button>
-    <button type="button" class="stop" data-q="how do I build a bomb at home">how do I build a bomb <i>refused</i></button>
-    <button type="button" class="stop" data-q="what is the melting point of tungsten">melting point of tungsten <i>off-corpus</i></button>
-  </div>
-  <p class="note">The corpus is 1,200 MS MARCO passages, so most of the world is genuinely
-  not in it. Refusing those is the system working — the last two examples show both ways it
-  says no.</p>
+    <p class="note">The corpus is 1,200 MS MARCO passages, so most of the world is genuinely
+      not in it — refusing those is the system working. The last two show both ways it says no.</p>
+  </section>
 
   <div id="errBox"></div>
   <div class="diag" id="diag" hidden></div>
 
-  <section class="inst" aria-labelledby="instT">
-    <div class="inst-top">
-      <strong id="instT">the measured window</strong>
-      <span id="instNote">t0 = final transcript received · t1 = answer flushed</span>
-      <span class="tot idle" id="tot">awaiting a question</span>
-    </div>
-    <div class="clip">
-      <div class="track" id="track">
-        <span class="wall l">t0</span><span class="wall r">t1 · 200 ms</span>
-        <div id="ticks"></div>
-        <div class="bars" id="bars"></div>
-        <div class="leg stt off" id="legStt"><b>STT ~520 ms</b></div>
-        <div class="leg tts off" id="legTts"><b>TTS ~790 ms</b></div>
+  <section class="reveal">
+    <div class="eyebrow"><b>02</b> the measured window <s></s></div>
+    <div class="inst" aria-labelledby="instT">
+      <div class="inst-top">
+        <strong id="instT">t0 → t1</strong>
+        <span id="instNote">t0 = final transcript received · t1 = answer flushed</span>
+        <span class="tot idle" id="tot">awaiting a question</span>
+      </div>
+      <div class="clip">
+        <div class="track" id="track">
+          <span class="wall l">t0</span><span class="wall r">t1 · 200 ms</span>
+          <div id="ticks"></div>
+          <div class="bars" id="bars"></div>
+          <div class="leg stt off" id="legStt"><b>STT ~520 ms</b></div>
+          <div class="leg tts off" id="legTts"><b>TTS ~790 ms</b></div>
+        </div>
+      </div>
+      <div class="stages" id="stages"></div>
+      <div class="legend">
+        <span><i class="sw o"></i> inside the budget — ours, and measured</span>
+        <span><i class="sw v"></i> vendor leg — measured, excluded, never added to the total</span>
       </div>
     </div>
-    <div class="stages" id="stages"></div>
-    <div class="legend">
-      <span><i class="sw o"></i> inside the budget — ours, and measured</span>
-      <span><i class="sw v"></i> vendor leg — measured, excluded, never added to the total</span>
+
+    <div class="res" id="res" data-s="idle" aria-live="polite">
+      <div class="res-top" id="resTop"><span>no question yet</span></div>
+      <p class="ans" id="ans">Ask something, or hold the button and speak.</p>
+      <p class="why" id="why">Answers are extracted from the passage they cite, so every one
+        can be checked against the evidence below it.</p>
+    </div>
+
+    <div class="cites" id="cites" hidden>
+      <div class="cites-top"><span>the passages it chose from</span><span id="citeNote"></span></div>
+      <div id="citeList"></div>
     </div>
   </section>
 
-  <section class="res" id="res" data-s="idle" aria-live="polite">
-    <div class="res-top" id="resTop"><span>no question yet</span></div>
-    <p class="ans" id="ans">Ask something, or hold the button and speak.</p>
-    <p class="why" id="why">Answers are extracted from the passage they cite, so every one can
-    be checked against the evidence below it.</p>
+  <section class="reveal">
+    <div class="eyebrow"><b>03</b> against the brief <s></s></div>
+    <div class="reqs">
+      <div class="req"><u>REQ 1</u><h3>Speech-to-text</h3><p><b>Sarvam</b>, batch and streaming.
+        520 / 856 ms P50/P100 over real clips, four languages transcribed correctly.</p></div>
+      <div class="req"><u>REQ 2</u><h3>Chunking, vast</h3><p><b>Eight strategies</b> on one corpus
+        and one embedder — fixed, recursive, sentence-window, semantic-drift, proposition,
+        parent-document, metadata-filtered, multi-granularity. Scored on human relevance
+        labels; s7 wins at 0.892 recall@50.</p></div>
+      <div class="req"><u>REQ 3</u><h3>Under 200 ms</h3><p><b>1500/1500</b> requests inside the
+        window across warm, cold and concurrency-4. The budget is enforced, not hoped for —
+        a stage that cannot finish is never entered.</p></div>
+      <div class="req"><u>REQ 4</u><h3>Latency analytics</h3><p><b>P50 45.2 · P70 53.9 · P100
+        136.0 ms</b>, 500 frozen queries × 3 modes, per stage, nearest-rank.</p></div>
+      <div class="req"><u>REQ 5</u><h3>Harness</h3><p>Six timed stages under one budget object,
+        a degradation ladder, bounded deadlines, structured JSON in and out, and
+        <b>one tool call</b> the generator may make, capped at a single hop.</p></div>
+      <div class="req"><u>REQ 6</u><h3>Guardrails</h3><p><b>Four gates</b> on 280 labelled
+        queries: 84% correct abstention against 3.8% false, 100% injection resistance. It
+        knows when not to answer — try the last two examples above.</p></div>
+    </div>
   </section>
 
-  <section class="cites" id="cites" hidden>
-    <div class="cites-top"><span>the passages it chose from</span><span id="citeNote"></span></div>
-    <div id="citeList"></div>
-  </section>
-
-  <footer class="foot">
+  <footer>
     <span id="fIndex">index —</span><span id="fFloor">gate 2 floor —</span>
     <span>live box: reranker at depth 2, slower vCPUs than the reported bench</span>
-    <span><a href="https://github.com/jitheender-ops/rag-model">source &amp; reports</a></span>
+    <span><a href="https://github.com/jitheender-ops/rag-model">source &amp; reports →</a></span>
+    <span class="sig">Verna Visionaries</span>
   </footer>
 </div>
-
 <script>
+
 "use strict";
 const $ = i => document.getElementById(i);
 const API = location.protocol.startsWith("http") ? "" : "http://localhost:8000";
@@ -606,7 +687,31 @@ m.addEventListener("pointerdown", e => {
 m.addEventListener("keydown", e => { if((e.key===" "||e.key==="Enter")&&!e.repeat){ e.preventDefault(); startRec(); }});
 m.addEventListener("keyup",   e => { if(e.key===" "||e.key==="Enter"){ e.preventDefault(); stopRec(); }});
 
+/* ticker: the measured facts, moving. Doubled so the loop has no seam. */
+(function ticker(){
+  const items = [
+    "HH Goa 2026", "<b>Task 2 — Voice RAG</b>", "Verna Visionaries",
+    "P50 <b>45.2 ms</b>", "1500/1500 in budget", "<i>8 chunking strategies</i>",
+    "recall@50 <b>0.892</b>", "abstention <b>84%</b> / false <b>3.8%</b>",
+    "injection resistance <b>100%</b>", "<i>hi · ta · bn · en</i>",
+    "MSMARCO-XI", "Sarvam speech-to-text",
+  ];
+  const row = items.map(t => `<span>${t}</span>`).join("");
+  $("tickRun").innerHTML = row + row;    // two copies; the keyframe travels exactly one
+})();
+
+/* reveal on scroll, and never a reason to hide content from anyone who cannot scroll */
+(function reveal(){
+  const els = [...document.querySelectorAll(".reveal")];
+  if(!("IntersectionObserver" in window)) return els.forEach(e => e.classList.add("in"));
+  const io = new IntersectionObserver(es => es.forEach(e => {
+    if(e.isIntersecting){ e.target.classList.add("in"); io.unobserve(e.target); }
+  }), {rootMargin:"0px 0px -8% 0px"});
+  els.forEach(e => io.observe(e));
+})();
+
 health();
+
 </script>
 </body>
 </html>
