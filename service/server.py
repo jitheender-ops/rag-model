@@ -269,6 +269,24 @@ def boot(strategy: str | None = None) -> dict:
     ix, texts, parents = load_index(strategy)
     STATE.update({"index": ix, "texts": texts, "parents": parents,
                   "strategy": strategy})
+    # ...and then one whole request, before the socket opens.
+    #
+    # Loading the models is not the same as having run them. The first real request was
+    # measured 60-90 ms slower than steady state even with both models resident -- torch
+    # allocates, the batch shapes are new, and generate's sentence encode had never run at
+    # all, because boot() warmed a single query vector and a reranker pair and nothing that
+    # walks the whole path. On a box sized close to the budget that difference is the
+    # difference between an answer and an abstention, and the visitor who pays it is the
+    # first one after every cold start -- which, for a link someone shares, is most of them.
+    #
+    # The query is drawn from the corpus so it clears gate 2 and reaches every later stage;
+    # a made-up string would abstain at the score floor and warm nothing past retrieval.
+    try:
+        seed = " ".join(next(iter(texts.values())).split()[:8])
+        t = answer(seed, ix, texts, qid="warmup", parents=parents)
+        print(f"warm: full path exercised in {t.total_ms:.1f} ms", flush=True)
+    except Exception as e:                      # a warmup must never stop the server booting
+        print(f"warm: skipped ({e!r})", flush=True)
     print(f"ready: {len(texts)} chunks, gate 2 floor {SCORE_FLOOR:.4f}, "
           f"gate 4 coverage floor {COVERAGE_FLOOR:.4f}", flush=True)
     return STATE

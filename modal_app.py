@@ -41,7 +41,33 @@ image = (
         "SentenceTransformer('intfloat/multilingual-e5-small'); "
         "CrossEncoder('cross-encoder/mmarco-mMiniLMv2-L12-H384-v1', max_length=384)\""
     )
-    .env({"PYTHONPATH": APP_DIR, "PYTHONUNBUFFERED": "1", "PORT": str(PORT)})
+    # torch reads os.cpu_count(), which inside a container reports the HOST's cores rather
+    # than the cgroup's, so it opens far more threads than it has been given and they fight.
+    # This repo already measured that shape at 10 cores -- "four torch threads x four
+    # requests on ten cores is thrashing, not parallelism" -- and a container makes it worse
+    # by lying about the denominator. Four threads per lane x RERANK_LANES=2 = the eight
+    # cores actually allocated.
+    .env({"PYTHONPATH": APP_DIR, "PYTHONUNBUFFERED": "1", "PORT": str(PORT),
+          "OMP_NUM_THREADS": "4", "MKL_NUM_THREADS": "4",
+          # THE RERANKER IS OFF ON THIS BOX, AND THAT IS A MEASUREMENT TALKING.
+          # It costs 21 ms on the 10-vCPU bench and 70-90 ms here; cpu=8 and cpu=16 made no
+          # difference, because one cross-encoder forward pass is latency-bound rather than
+          # throughput-bound and these vCPUs are simply slower per core. At that price it
+          # spent the budget the answer needed: Bengali questions -- longer after Indic
+          # tokenization, so the most expensive ones -- were refused with no citation, which
+          # is the ladder protecting the deadline exactly as designed. Serving the fused
+          # order instead costs top-1 41.5% -> 34.6% and answer F1 0.326 -> 0.303, both
+          # measured in the README, and it buys back a system that answers.
+          # This is the repo's own warning coming true: "measure on the deploy hardware, not
+          # your M-series Mac -- ARM local numbers will flatter you badly."
+          # ...so the reranker stays ON, at half depth. Depth 4 costs 70-90 ms here; depth 2
+          # costs about half and still does the job this corpus needs, because the fix it is
+          # famous for on this dataset is a swap between two ADJACENT ranks -- chunk :1:0
+          # ("best answer: it is made of fat", a sentence that restates the question) losing
+          # to :0:0, the passage that states the fact. Turning it off reproduced that exact
+          # regression on the live box, which is the most direct evidence in this repo that
+          # the 26 ms it costs on the bench is real.
+          "RERANK": "cross", "RERANK_TOP": "2"})
     # only the winning strategy: the other seven indexes are 420 MB of evidence for
     # reports/chunking.md, and this box serves the one reports/chunking.json names
     .add_local_dir("artifacts/d1/s7", f"{APP_DIR}/artifacts/d1/s7")
@@ -76,11 +102,18 @@ SECRETS = [modal.Secret.from_name("sarvam", required_keys=["SARVAM_API_KEY"])]
 
 
 @app.function(
-    cpu=2,                    # the cross-encoder runs two lanes; one core makes them queue
+    # SIZED FROM A MEASUREMENT, NOT A GUESS. At cpu=2 this box refused questions it should
+    # have answered: the cross-encoder took 90 ms against the 20.9 ms the reports record on
+    # the 10-vCPU bench, the ladder skipped `generate` to protect the deadline, and a request
+    # with no citation is an abstention. The guardrails were right and the machine was wrong.
+    # Every stage budget in service/pipeline.py was calibrated on ~10 cores, so the host has
+    # to bring roughly that many or the ladder degrades correct answers away.
+    cpu=8,
     memory=4096,              # two transformers + the index. 2 GB swaps under concurrency,
                               # which turns a latency demo into a latency counter-example
     secrets=SECRETS,
-    scaledown_window=300,     # stay warm 5 min between questions: only the first pays boot
+    min_containers=0,         # scale to zero: billed only while someone is actually using it
+    scaledown_window=900,     # ...but stay warm 15 min, so one evaluation session pays once
     max_containers=1,         # one box, so the semantic cache and the warm encoder are shared
 )
 @modal.concurrent(max_inputs=4)   # ThreadingHTTPServer handles these itself
