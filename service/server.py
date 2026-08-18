@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -220,7 +221,11 @@ class Handler(BaseHTTPRequestHandler):
             with open(PAGE, "rb") as fh:
                 return self._send(200, fh.read(), "text/html; charset=utf-8")
         if path == "/health":
-            return self._send(200, {"status": "ok" if STATE else "loading",
+            # ready means the serving path is warm, not merely that the models loaded. The
+            # page waits on this, so promising readiness early hands the first visitor the
+            # one slow request on the box -- and on a machine sized this close to the budget
+            # that request is an abstention rather than an answer.
+            return self._send(200, {"status": "ok" if STATE.get("ready") else "loading",
                                     "index": STATE.get("strategy"),
                                     "chunks": len(STATE.get("texts") or ()),
                                     "score_floor": SCORE_FLOOR,
@@ -281,10 +286,16 @@ def boot(strategy: str | None = None) -> dict:
     #
     # The query is drawn from the corpus so it clears gate 2 and reaches every later stage;
     # a made-up string would abstain at the score floor and warm nothing past retrieval.
+    # Three passes, not one. A single warm request still left the next few 30-40 ms slow --
+    # torch settles over several calls, not the first -- and on a box sized this close to the
+    # budget those milliseconds are the difference between an answer and an abstention. The
+    # visitor who would have paid for them is the first one after every cold start, which for
+    # a shared link is most of them. Three costs about a second of boot, once.
     try:
-        seed = " ".join(next(iter(texts.values())).split()[:8])
-        t = answer(seed, ix, texts, qid="warmup", parents=parents)
-        print(f"warm: full path exercised in {t.total_ms:.1f} ms", flush=True)
+        seeds = [" ".join(t.split()[:8]) for t in list(texts.values())[:3]]
+        for i, seed in enumerate(seeds, 1):
+            t = answer(seed, ix, texts, qid=f"warmup{i}", parents=parents)
+            print(f"warm {i}/{len(seeds)}: {t.total_ms:.1f} ms", flush=True)
     except Exception as e:                      # a warmup must never stop the server booting
         print(f"warm: skipped ({e!r})", flush=True)
     print(f"ready: {len(texts)} chunks, gate 2 floor {SCORE_FLOOR:.4f}, "
@@ -292,10 +303,47 @@ def boot(strategy: str | None = None) -> dict:
     return STATE
 
 
+def self_warm(port: int, n: int = 3):
+    """Ask ourselves a few questions over HTTP, in the background, once the socket is open.
+
+    boot() already runs the whole path three times, and it was not enough: the first real
+    request still came back 10-15 ms slower and, on a box sized this close to the budget,
+    that was the difference between an answer and an abstention for whoever arrived first.
+    The reason it was not enough is that boot() runs on the main thread and every request
+    runs on a fresh one from ThreadingHTTPServer -- so the path that was warm was not the
+    path that serves. This warms the one that does.
+
+    Daemon, best-effort, and it never blocks serve_forever(): a warmup that can delay the
+    socket is a worse problem than the one it solves.
+    """
+    def work():
+        import time
+        import urllib.request
+        time.sleep(0.3)
+        seed = " ".join(next(iter(STATE["texts"].values())).split()[:8])
+        body = json.dumps({"text": seed}).encode()
+        for i in range(n):
+            try:
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/ask", data=body,
+                                             headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    ms = json.loads(r.read()).get("total_ms")
+                print(f"self-warm {i + 1}/{n}: {ms} ms", flush=True)
+            except Exception as e:
+                print(f"self-warm {i + 1}/{n} skipped: {e!r}", flush=True)
+                break
+        # ready either way: a warmup that failed must not leave the box permanently
+        # advertising itself as unavailable
+        STATE["ready"] = True
+        print("ready: serving path warm", flush=True)
+    threading.Thread(target=work, daemon=True).start()
+
+
 def main():
     port = int(os.getenv("PORT", "8000"))
     boot()
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    self_warm(port)
     print(f"\n  demo page  http://localhost:{port}/\n"
           f"  endpoint   http://localhost:{port}/ask\n"
           f"  health     http://localhost:{port}/health\n\nctrl-c to stop", flush=True)
