@@ -12,10 +12,18 @@ Two backends behind one signature, chosen by EMBEDDER (default: st when it impor
   hash  the zero-dependency fallback: hashed bag of words, sparse cosine. Deterministic,
         needs no download, keeps `make check` fast. EMBEDDER=hash forces it.
 
-ponytail: the index is still exact (dense brute force / sparse postings), not HNSW, so
-"index size" is our own serialisation rather than a graph on disk. At this corpus size
-exact search is faster than building a graph would be; upgrade path is faiss/qdrant
-behind Index.search() -- the six columns and every caller stay as they are.
+Two dense search backends behind one signature, chosen by INDEX (default: exact):
+
+  exact  a float32 matrix and a full dot product. Exact neighbours, linear in corpus size.
+         The default because every number in this repo was measured on it, and because at
+         12k chunks it costs 1.3 ms -- less than building a graph, and it cannot be wrong.
+  hnsw   faiss IndexHNSWFlat, inner product over L2-normalised vectors (= cosine). Sublinear,
+         approximate, and the one thing that makes the latency table survive a corpus this
+         repo does not fit on disk. `make ann` measures both: where the crossover is, and
+         what the approximation costs in recall.
+
+M / EF_CONSTRUCTION / EF_SEARCH below were recorded in the manifest long before there was a
+graph to apply them to. They now build one.
 """
 from __future__ import annotations
 
@@ -23,11 +31,20 @@ import json
 import math
 import os
 import re
+import sys
 import zlib
 from collections import defaultdict
 
-M = 32              # recorded in the manifest so the params are visible even though
-EF_CONSTRUCTION = 200  # the index is exact -- same values for all strategies
+M = int(os.getenv("HNSW_M", "32"))                    # graph degree
+EF_CONSTRUCTION = int(os.getenv("HNSW_EF_CONSTRUCTION", "200"))
+# efSearch is the recall/latency dial and the only one worth tuning per deployment. 128 is
+# where `make ann` measures recall@50 agreement with exact at 0.99+ on this corpus; lower it
+# for speed once you have re-measured, do not lower it because a blog post said 64.
+EF_SEARCH = int(os.getenv("HNSW_EF_SEARCH", "128"))
+# exact by default: every table in this repo was measured on it, and a default that silently
+# changes what "recall@50" means would make the D1 column a comparison of two different
+# things. INDEX=hnsw opts in, and `make ann` is what justifies opting in.
+ANN = os.getenv("INDEX", "exact")
 K1, B = 1.2, 0.75   # bm25
 
 HASH_DIM = 4096     # hashed-backend vector dimensionality
@@ -122,6 +139,30 @@ def cosine(a, b) -> float:
     return float(a @ b)          # both already L2-normalised
 
 
+def build_hnsw(mat):
+    """A faiss HNSW graph over L2-normalised vectors.
+
+    METRIC_INNER_PRODUCT, not L2: the vectors are already unit length, so inner product is
+    cosine and the scores come back on the same scale everything downstream is calibrated
+    against. Building an L2 graph instead would return the same neighbours and a score gate 2
+    would have to be re-fitted for, which is a silent way to break a threshold.
+    """
+    import faiss
+    # Two OpenMP runtimes in one process -- torch ships libomp, faiss ships its own -- and on
+    # macOS the second one to touch a parallel region segfaults the interpreter. Not a
+    # hypothetical: `import torch` before build_hnsw() is an immediate SIGSEGV at 12k vectors,
+    # and it exits 139 with no traceback, which reads like a corrupt index rather than a
+    # linker problem. One thread is also what the serving path wants: this repo already
+    # measured that four concurrent forward passes on ten cores is thrashing, not
+    # parallelism, and a search that grabs every core does the same thing to its neighbours.
+    faiss.omp_set_num_threads(1 if "torch" in sys.modules else faiss.omp_get_max_threads())
+    ix = faiss.IndexHNSWFlat(mat.shape[1], M, faiss.METRIC_INNER_PRODUCT)
+    ix.hnsw.efConstruction = EF_CONSTRUCTION
+    ix.hnsw.efSearch = EF_SEARCH
+    ix.add(mat)
+    return ix
+
+
 class Index:
     """Exact search + BM25 over the same corpus. One instance per strategy.
 
@@ -135,6 +176,7 @@ class Index:
         self.payload: list[dict] = []
         self.vecs: list = []
         self._mat = None            # dense backend only, built at freeze()
+        self._ann = None            # faiss HNSW graph, built at freeze() when INDEX=hnsw
         self._post: dict[int, list[tuple[int, float]]] = defaultdict(list)
         self._tok: dict[str, list[tuple[int, int]]] = defaultdict(list)
         self._len: list[int] = []
@@ -168,10 +210,20 @@ class Index:
         self._avglen = (sum(self._len) / len(self._len)) if self._len else 0.0
         if self.vecs and not isinstance(self.vecs[0], dict):
             import numpy as np
-            self._mat = np.vstack(self.vecs)
+            self._mat = np.vstack(self.vecs).astype("float32")
+            if ANN == "hnsw":
+                self._ann = build_hnsw(self._mat)
         return self
 
     def search(self, qvec, k: int = 50) -> list[tuple[str, float]]:
+        if self._ann is not None:
+            import numpy as np
+            q = np.ascontiguousarray(np.asarray(qvec, dtype="float32").reshape(1, -1))
+            scores, idx = self._ann.search(q, min(k, len(self.ids)))
+            # faiss pads a short result with -1; a -1 would index the LAST id and quietly
+            # return a real chunk that was never a neighbour
+            return [(self.ids[int(i)], float(sc))
+                    for sc, i in zip(scores[0], idx[0]) if i >= 0]
         if self._mat is not None:
             import numpy as np
             scores = self._mat @ qvec
@@ -242,7 +294,31 @@ def demo():
     v = embed("bridge", "passage")
     assert abs(cosine(v, v) - 1.0) < 1e-5
     assert ix.save("/tmp/_ix.jsonl") > 0
-    print(f"index ok [{BACKEND}] dim={DIM()}", [(c, round(s, 3)) for c, s in hits])
+
+    # the ANN backend must agree with exact on the same vectors, and must not pad its
+    # result with faiss's -1 sentinel -- a -1 indexes the LAST id and returns a real chunk
+    # that was never a neighbour, which is the one ANN bug that looks like a good answer
+    if BACKEND == "st":
+        try:
+            import faiss  # noqa: F401
+        except ImportError:
+            faiss = None
+        if faiss is not None:
+            import numpy as np
+            ann = build_hnsw(np.vstack(ix.vecs).astype("float32"))
+            sc, idx = ann.search(np.ascontiguousarray(
+                np.asarray(q, dtype="float32").reshape(1, -1)), 2)
+            assert ix.ids[int(idx[0][0])] == "a", idx
+            assert abs(float(sc[0][0]) - hits[0][1]) < 1e-4, (sc[0][0], hits[0][1])
+            # k larger than the corpus: every padded slot must be dropped, not indexed
+            over = Index()
+            over.add_many([("only", "a single chunk", {"pid": "p"})])
+            over.freeze()
+            over._ann = build_hnsw(np.vstack(over.vecs).astype("float32"))
+            got = over.search(embed("single", "query"), k=50)
+            assert [c for c, _ in got] == ["only"], got
+
+    print(f"index ok [{BACKEND}/{ANN}] dim={DIM()}", [(c, round(s, 3)) for c, s in hits])
 
 
 if __name__ == "__main__":
