@@ -308,6 +308,24 @@ def fuse(index: Index, query: str, qvec, k: int) -> tuple[list[tuple[str, float]
     return fused, (dense[0][1] if dense else 0.0)
 
 
+def below(value: float, floor: float, lo: int = 4, hi: int = 9) -> str:
+    """`a < b`, printed at enough decimals that a and b actually look different.
+
+    Two rounds of this message were wrong in front of a reader. At 2dp against a 4dp floor
+    a refusal read "0.84 < 0.8368", which is false as printed. Rounding both to 4dp then
+    read "0.8368 < 0.8368", which is worse -- it looks like the gate fired on equal numbers.
+
+    Neither was a near-miss of a bug; it is structural. `service/calibrate.py` sweeps the
+    floor to a value some observed score actually had, and ties keep the lower floor, so
+    scores sitting a millionth under the threshold are the normal case rather than the odd
+    one. The precision has to follow the numbers.
+    """
+    dp = lo
+    while dp < hi and f"{value:.{dp}f}" == f"{floor:.{dp}f}":
+        dp += 1
+    return f"{value:.{dp}f} < {floor:.{dp}f}"
+
+
 @stage("retrieve", budget_ms=25)
 def retrieve(ctx: Ctx, qvec, degraded=False):
     """dense + bm25 + RRF."""
@@ -321,7 +339,7 @@ def retrieve(ctx: Ctx, qvec, degraded=False):
         ctx.trace.event("gate2_unavailable", reason="encoder deadline")
     elif best_dense < SCORE_FLOOR:                                  # gate 2
         ctx.abstain, ctx.gate = True, "gate2_score"
-        ctx.reason = f"top dense score {best_dense:.2f} < {SCORE_FLOOR}"
+        ctx.reason = f"top dense score {below(best_dense, SCORE_FLOOR)}"
     ctx.hits = [(cid, s, ctx.index.get(cid)) for cid, s in fused]
     return ctx.hits
 
@@ -877,6 +895,15 @@ def demo():
     # ...and a bracket that is genuinely part of the passage must survive untouched
     assert display("[citation needed] the bridge") == "[citation needed] the bridge"
     assert display("[see fig. 2] rainfall") == "[see fig. 2] rainfall"
+
+    # the refusal message has to read as true: printed at too few decimals it says
+    # "0.84 < 0.8368" or "0.8368 < 0.8368", and a correct gate looks broken to the reader
+    assert below(0.5, 0.9) == "0.5000 < 0.9000", below(0.5, 0.9)
+    # the property, not a guessed string: whatever precision it picks, the two printed
+    # numbers must differ AND must still read as a true inequality
+    for v, f in ((0.836795, 0.8368), (0.83679999, 0.8368), (0.1, 0.100000001)):
+        a, b = below(v, f).split(" < ")
+        assert a != b and float(a) < float(b), (v, f, a, b)
 
     # fuse() is what retrieve() and the search_corpus tool share; if they drift, a tool
     # result is ranked by one system and read as if it came from the other

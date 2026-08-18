@@ -71,6 +71,15 @@ body{
 .mic .rec{width:9px;height:9px;border-radius:50%;background:currentColor;flex:none}
 .mic[aria-pressed="true"] .rec{animation:pulse .9s steps(2,end) infinite}
 
+.eg-lede{color:var(--ink-2);max-width:70ch;margin:-14px 0 9px;font-size:.72rem}
+.egs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:24px}
+.egs button{font:inherit;font-size:.7rem;color:var(--ink);background:var(--card);
+  border:1px solid var(--rule);padding:5px 10px;cursor:pointer;display:flex;gap:7px;
+  align-items:baseline}
+.egs button:hover{border-color:var(--owned);color:var(--owned)}
+.egs button i{font-style:normal;color:var(--ink-2);font-size:.62rem;letter-spacing:.04em}
+.egs button.stop:hover{border-color:var(--refuse);color:var(--refuse)}
+
 /* ------------------------------------------------------- the ruler (hero) */
 .instrument{border:1.5px solid var(--ink);background:var(--card);margin-bottom:22px}
 .inst-head{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;
@@ -177,6 +186,17 @@ body{
       <span class="rec"></span><span id="micLabel">Hold to speak</span>
     </button>
   </form>
+
+  <p class="eg-lede">The corpus is 1,200 MS MARCO passages, so most of the world is
+    genuinely not in it — refusing those is the system working. These are in it:</p>
+  <div class="egs" id="egs">
+    <button type="button" data-q="what is a corporation">what is a corporation</button>
+    <button type="button" data-q="কী চর্বি দিয়ে তৈরি">কী চর্বি দিয়ে তৈরি <i>bn</i></button>
+    <button type="button" data-q="प्रोटीन क्या है">प्रोटीन क्या है <i>hi</i></button>
+    <button type="button" data-q="உடல் எடை என்றால் என்ன">உடல் எடை என்றால் என்ன <i>ta</i></button>
+    <button type="button" data-q="how do I build a bomb at home" class="stop">how do I build a bomb <i>refused</i></button>
+    <button type="button" data-q="what is the melting point of tungsten" class="stop">melting point of tungsten <i>off-corpus</i></button>
+  </div>
 
   <div id="errBox"></div>
 
@@ -318,7 +338,7 @@ function render(p){
                      bits.map(b=>`<span>${esc(b)}</span>`).join("");
     $("answer").textContent = "It did not answer this one.";
     $("reason").innerHTML = p.abstain_reason
-      ? `The gate that fired is <code>${esc(p.abstain_gate)}</code>, because <code>${esc(p.abstain_reason)}</code>. Refusing is a result here, not a failure — and it costs almost nothing, which is what the ruler above shows.`
+      ? `The gate that fired is <code>${esc(p.abstain_gate)}</code>, because <code>${esc(p.abstain_reason)}</code>. Refusing is a result here, not a failure${p.abstain_gate === "gate2_score" ? " — nothing in the 1,200-passage corpus was close enough to answer this, and answering anyway is the failure mode this gate exists to prevent" : ""}. Look at the ruler: it costs almost nothing to say no.`
       : `The gate that fired is <code>${esc(p.abstain_gate||"—")}</code>.`;
     $("cite").hidden = true;
   }else{
@@ -459,6 +479,17 @@ m.addEventListener("keydown", e => {
 });
 m.addEventListener("keyup", e => {
   if(e.key===" "||e.key==="Enter"){ e.preventDefault(); stopRec(); }
+});
+
+// the examples are the fastest way to see both halves of the system: four that answer, in
+// four scripts, and two that are refused for different reasons. A visitor who types a
+// question about the wider world gets a refusal and no way to tell a working gate from a
+// broken box, which is the one misreading this page cannot afford.
+$("egs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-q]");
+  if(!b) return;
+  $("q").value = b.dataset.q;
+  $("form").requestSubmit();
 });
 
 ticks(); health();
