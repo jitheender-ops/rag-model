@@ -130,6 +130,8 @@ button{font:inherit}
 .stg:last-child{border-right:0}
 .stg b{color:var(--ink);font-variant-numeric:tabular-nums}
 .stg.dim b{color:var(--vendor)}
+.stg.skip{opacity:.5}
+.stg.skip b{color:var(--ink-2);font-weight:400;font-style:italic}
 
 /* result ---------------------------------------------------------------- */
 .res{border:1.5px solid var(--ink);background:var(--card);margin-bottom:20px}
@@ -144,6 +146,7 @@ button{font:inherit}
 .res[data-s="busy"] .ans{color:var(--ink-2)}
 .why{padding:0 20px 17px;color:var(--ink-2);max-width:72ch}
 .why code{background:var(--owned-soft);padding:1px 5px;color:var(--ink)}
+.why a{color:var(--owned)}
 .res[data-s="abstained"] .why code{background:transparent;color:var(--refuse);
   box-shadow:inset 0 -1px 0 var(--refuse)}
 
@@ -267,8 +270,13 @@ button{font:inherit}
 const $ = i => document.getElementById(i);
 const API = location.protocol.startsWith("http") ? "" : "http://localhost:8000";
 const BUDGET = 200;
-const ORDER = [["guard","guards"],["embed","embed"],["retrieve","retrieve"],
-               ["rerank","rerank"],["generate","generate"],["verify","verify"]];
+// [payload key, label, the span name the server records]. The third column is the point:
+// timings_ms fills missing stages with 0.0, so a stage that never ran is indistinguishable
+// from one that ran instantly -- and "rerank 0.00" after a gate-2 refusal reads as broken
+// rather than as skipped. spans_ms contains only stages that actually executed.
+const ORDER = [["guard","guards","input_guards"],["embed","embed","embed_query"],
+               ["retrieve","retrieve","retrieve"],["rerank","rerank","rerank"],
+               ["generate","generate","generate"],["verify","verify","verify"]];
 const esc = t => String(t ?? "").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
 /* health --------------------------------------------------------------- */
@@ -305,7 +313,9 @@ async function health(){
 
 function draw(p){
   const bars = $("bars"); bars.innerHTML = "";
-  for(const [k,label] of ORDER){
+  const ran = p.spans_ms || {};
+  for(const [k,label,span] of ORDER){
+    if(!(span in ran)) continue;
     const ms = (p.timings_ms||{})[k] || 0;
     if(ms <= 0) continue;
     const d = document.createElement("div");
@@ -330,12 +340,18 @@ function draw(p){
 
   const st = $("stages"); st.innerHTML = "";
   const deg = new Set(p.degraded||[]);
-  for(const [k,label] of ORDER){
-    const ms = (p.timings_ms||{})[k];
-    if(ms == null) continue;
+  for(const [k,label,span] of ORDER){
     const d = document.createElement("div");
-    d.className = "stg" + (deg.has(k==="guard"?"input_guards":k) || deg.has(label) ? " dim":"");
-    d.innerHTML = `${label} <b>${ms.toFixed(2)}</b>`;
+    if(!(span in ran)){
+      // a gate fired before this stage, so it has no time to report and never had one
+      d.className = "stg skip";
+      d.innerHTML = `${label} <b>not reached</b>`;
+      d.title = "a gate refused the request before this stage ran";
+    }else{
+      const ms = (p.timings_ms||{})[k] ?? 0;
+      d.className = "stg" + (deg.has(span) || deg.has(label) ? " dim" : "");
+      d.innerHTML = `${label} <b>${ms.toFixed(2)}</b>`;
+    }
     st.appendChild(d);
   }
   if(deg.size){
@@ -361,14 +377,36 @@ function render(p){
     $("resTop").innerHTML = `<span>refused · ${esc(p.abstain_gate||"gate")}</span>`
       + tags.map(t=>`<span>${esc(t)}</span>`).join("");
     $("ans").textContent = "It did not answer this one.";
-    const extra = p.abstain_gate === "gate2_score"
-      ? " Nothing in the 1,200-passage corpus scored close enough, and answering anyway is the failure this gate exists to prevent."
-      : p.abstain_gate === "gate1_unsafe" ? " Refused before retrieval ran, which is why it cost almost nothing."
-      : p.abstain_gate === "gate1_injection" ? " The instruction in the question was treated as data, not as a command."
-      : "";
+    // The reason string is a threshold comparison, and on its own it reads like a
+    // hair's-breadth failure -- 0.8365 against 0.8368 looks like the system nearly managed
+    // it. It did not: e5 packs unrelated text around 0.83, so a score just under the floor
+    // is the normal signature of "this is not in the corpus", not a near miss. Say that,
+    // and say it about what the person actually asked.
+    const G = {
+      gate1_unsafe: "Refused before retrieval ran — which is why it cost almost nothing. " +
+                    "The ruler above is what a refusal costs.",
+      gate1_injection: "The instruction inside the question was treated as data, never as a " +
+                       "command. Nothing downstream ever saw it.",
+      gate2_score: "Nothing in the 1,200-passage corpus was about this. The two numbers sit " +
+                   "close together because this embedder packs unrelated text around 0.83 — " +
+                   "so a score just under the floor is what “not in the corpus” looks like, " +
+                   "not a near miss.",
+      gate4_nli: "A passage was retrieved, but it did not support an answer to what was " +
+                 "asked — the failure this system is most interested in catching.",
+      gate4_unverified: "There was no budget left to check grounding, and an unverified " +
+                        "answer is exactly what this system exists not to give.",
+    }[p.abstain_gate] || "";
+    const heard = p.transcript && p.abstain_gate === "gate2_score"
+      ? ` It heard “${esc(p.transcript)}”.` : "";
     $("why").innerHTML = `Gate <code>${esc(p.abstain_gate||"—")}</code> fired`
       + (p.abstain_reason ? `: <code>${esc(p.abstain_reason)}</code>.` : ".")
-      + esc(extra).replace(/&quot;/g,'"') + " Refusing is a result here, not a failure.";
+      + heard + " " + G + " Refusing is a result here, not a failure — "
+      + `<a href="#" id="tryEg">try one of the examples</a> to see it answer.`;
+    const t = $("tryEg");
+    if(t) t.addEventListener("click", e => {
+      e.preventDefault();
+      document.querySelector("#egs button").click();
+    });
   }else{
     res.dataset.s = "answered";
     $("resTop").innerHTML = `<span>answered</span>` + tags.map(t=>`<span>${esc(t)}</span>`).join("");
