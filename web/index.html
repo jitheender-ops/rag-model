@@ -117,6 +117,8 @@ body{
 /* ------------------------------------------------------------------ result */
 .result{border:1.5px solid var(--ink);background:var(--card);margin-bottom:22px}
 .result[data-state="abstained"]{border-color:var(--refuse)}
+.result[data-state="busy"]{border-style:dashed}
+.result[data-state="busy"] .answer{color:var(--ink-2)}
 .r-head{padding:9px 13px;border-bottom:1px solid var(--rule);color:var(--ink-2);
   display:flex;flex-wrap:wrap;gap:6px 14px;letter-spacing:.06em;
   text-transform:uppercase;font-size:.7rem}
@@ -344,8 +346,22 @@ function fail(title, detail){
   $("errBox").innerHTML = `<div class="err"><b>${esc(title)}</b>${esc(detail)}</div>`;
 }
 function busy(on, what){
+  // A caption nobody looks at is not feedback. The answer panel is where the eye already
+  // is, so the working state goes there -- and it names the stage, because "transcribing"
+  // and "measuring" are different waits and only one of them is ours.
   $("instNote").textContent = on ? (what || "measuring…")
     : "t0 = final transcript received · t1 = answer flushed";
+  const res = $("result");
+  if(on){
+    res.dataset.state = "busy";
+    $("rHead").innerHTML = `<span>${esc(what || "working…")}</span>`;
+    $("answer").textContent = "…";
+    $("reason").textContent = (what || "").startsWith("transcribing")
+      ? "Speech-to-text is a vendor round trip and sits outside the 200 ms window — it is "
+        + "measured and reported separately, never added to the total."
+      : "";
+    $("cite").hidden = true;
+  }
 }
 
 /* ------------------------------------------------------------------ send */
@@ -369,40 +385,75 @@ $("form").addEventListener("submit", e => {
 });
 
 /* ------------------------------------------------------------------- mic */
-let rec = null, chunks = [];
+// `holding` is the source of truth, not `rec`. getUserMedia blocks on the permission
+// prompt -- seconds, the first time -- and a release during that wait used to run stopRec()
+// while rec was still null: the recorder then started and never stopped. The mic stayed
+// live, nothing was ever sent, and the page sat there looking idle. That is the whole bug.
+let rec = null, chunks = [], holding = false, startedAt = 0;
+const MIN_MS = 350;            // shorter than this transcribes to nothing and 400s
+
 async function startRec(){
-  if(!navigator.mediaDevices?.getUserMedia)
+  if(rec || holding) return;
+  holding = true;
+  $("errBox").innerHTML = "";
+  $("micLabel").textContent = "Starting…";
+  if(!navigator.mediaDevices?.getUserMedia){
+    holding = false;
     return fail("this browser has no microphone API", "Type the question instead.");
-  try{
-    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
-    rec = new MediaRecorder(stream);
-    chunks = [];
-    rec.ondataavailable = e => e.data.size && chunks.push(e.data);
-    rec.onstop = () => {
-      stream.getTracks().forEach(t => t.stop());
-      if(!chunks.length) return;
-      const fd = new FormData();
-      fd.append("audio", new Blob(chunks, {type: rec.mimeType || "audio/webm"}), "clip.webm");
-      send(fd, undefined, "transcribing, then measuring…");
-    };
-    rec.start();
-    $("mic").setAttribute("aria-pressed","true");
-    $("micLabel").textContent = "Release to ask";
-  }catch(e){
-    fail("the microphone was not available", "Allow mic access, or type the question.");
   }
+  let stream;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({audio:true});
+  }catch(e){
+    holding = false; resetMic();
+    return fail("the microphone was not available",
+                "Allow mic access in the browser, or type the question instead.");
+  }
+  if(!holding){                       // released while the permission prompt was open
+    stream.getTracks().forEach(t => t.stop());
+    return resetMic();
+  }
+  chunks = [];
+  rec = new MediaRecorder(stream);
+  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onstop = () => {
+    stream.getTracks().forEach(t => t.stop());
+    const held = Date.now() - startedAt;
+    rec = null;
+    resetMic();
+    if(!chunks.length || held < MIN_MS)
+      return fail("that clip was too short to transcribe",
+                  "Hold the button down while you speak, then release.");
+    const fd = new FormData();
+    fd.append("audio", new Blob(chunks, {type: chunks[0].type || "audio/webm"}), "clip.webm");
+    send(fd, undefined, "transcribing, then measuring…");
+  };
+  startedAt = Date.now();
+  rec.start();
+  $("mic").setAttribute("aria-pressed","true");
+  $("micLabel").textContent = "Listening — release to ask";
 }
+
 function stopRec(){
-  if(rec && rec.state !== "inactive") rec.stop();
-  rec = null;
+  if(!holding) return;
+  holding = false;
+  if(rec && rec.state !== "inactive") rec.stop();   // onstop does the rest
+  else resetMic();
+}
+function resetMic(){
   $("mic").setAttribute("aria-pressed","false");
   $("micLabel").textContent = "Hold to speak";
 }
+
 const m = $("mic");
 m.addEventListener("pointerdown", e => { e.preventDefault(); startRec(); });
-["pointerup","pointerleave","pointercancel"].forEach(ev =>
-  m.addEventListener(ev, stopRec));
-// keyboard: space/enter holds while pressed, so the control works without a pointer
+["pointerup","pointercancel"].forEach(ev => m.addEventListener(ev, e => {
+  e.preventDefault(); stopRec();
+}));
+// leaving the button while held should not abandon a recording mid-sentence; the pointer is
+// captured instead, so the release is still heard wherever it happens
+m.addEventListener("pointerdown", e => { try{ m.setPointerCapture(e.pointerId); }catch{} });
+// keyboard: hold space/enter, same contract as the pointer
 m.addEventListener("keydown", e => {
   if((e.key===" "||e.key==="Enter") && !e.repeat){ e.preventDefault(); startRec(); }
 });
