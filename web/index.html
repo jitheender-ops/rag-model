@@ -15,7 +15,13 @@
   --amber:#FF8C42;     /* the vendor's clock, outside the walls */
   --pink:#E83E8C;      /* an abstention. A result, not an error. */
   --sea:#2BB3A3;
-  --disp:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  /* Roobert's own fallback chain, taken from the reference site itself -- so this is the
+     face that site actually renders for anyone who does not get its webfont. */
+  --disp:"Helvetica Neue",Helvetica,Roboto,Arial,sans-serif;
+  /* the reference site's signature: easeOutQuart at .6s on colour and border, never on
+     transforms. Unhurried, and it never bounces. */
+  --ease:cubic-bezier(.165,.84,.44,1);
+  --slow:.6s var(--ease);
   --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
   --serif:Charter,"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
 }
@@ -54,7 +60,7 @@ a{color:var(--sea)}
 .tick-bar:hover .tick-run{animation-play-state:paused}
 
 /* hero ------------------------------------------------------------------ */
-.hero{padding:clamp(30px,7vh,72px) 0 clamp(22px,4vh,40px)}
+.hero{padding:clamp(38px,10vh,110px) 0 clamp(26px,5vh,54px)}
 .badges{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:22px}
 .badge{border:1px solid var(--line);padding:5px 11px;font-size:.63rem;letter-spacing:.18em;
   text-transform:uppercase;color:var(--ink-2)}
@@ -63,8 +69,8 @@ a{color:var(--sea)}
 .badge.live i{width:6px;height:6px;border-radius:50%;background:var(--sea);
   animation:pulse 1.8s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.25}}
-h1{font-family:var(--disp);font-weight:800;letter-spacing:-.045em;line-height:.92;
-  font-size:clamp(2.5rem,10vw,6.6rem);text-transform:uppercase;margin-bottom:20px}
+h1{font-family:var(--disp);font-weight:700;letter-spacing:-.05em;line-height:.9;
+  font-size:clamp(2.7rem,11vw,7.6rem);text-transform:uppercase;margin-bottom:20px}
 h1 span{display:block}
 h1 .lit{background:linear-gradient(96deg,var(--gold),var(--amber) 62%,var(--pink));
   -webkit-background-clip:text;background-clip:text;color:transparent}
@@ -75,36 +81,48 @@ h1 .thin{font-weight:300;color:var(--ink-2);letter-spacing:-.02em}
 
 /* facts ----------------------------------------------------------------- */
 .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));
-  border:1px solid var(--line);border-bottom:0;margin:36px 0 0;background:var(--deep)}
-.fact{padding:16px 16px;border-right:1px solid var(--line-2);border-bottom:1px solid var(--line)}
+  border:1px solid var(--line);border-bottom:0;margin:clamp(34px,6vh,64px) 0 0;background:var(--deep)}
+.fact{padding:20px 18px;border-right:1px solid var(--line-2);border-bottom:1px solid var(--line);
+  transition:background var(--slow)}
+.fact:hover{background:var(--panel)}
 .fact:last-child{border-right:0}
 .fact b{display:block;font-family:var(--disp);font-weight:700;font-size:1.5rem;
   letter-spacing:-.03em;color:var(--gold);line-height:1.05}
 .fact span{color:var(--ink-2);font-size:.64rem;letter-spacing:.06em;text-transform:uppercase}
 
 /* sections -------------------------------------------------------------- */
-section{padding:clamp(28px,5vh,52px) 0}
+section{padding:clamp(40px,9vh,104px) 0}
 .eyebrow{display:flex;align-items:baseline;gap:12px;margin-bottom:18px;
   font-size:.63rem;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-2)}
 .eyebrow s{flex:1;height:1px;background:var(--line);text-decoration:none}
 .eyebrow b{color:var(--gold);font-weight:600}
-.reveal{opacity:0;transform:translateY(14px);transition:opacity .7s ease,transform .7s ease}
+.reveal{opacity:0;transform:translateY(18px);
+  transition:opacity .9s var(--ease),transform .9s var(--ease)}
 .reveal.in{opacity:1;transform:none}
+.stagger > *{opacity:0;transform:translateY(14px);
+  transition:opacity .8s var(--ease),transform .8s var(--ease);
+  transition-delay:calc(var(--i,0) * 70ms)}
+.stagger.in > *{opacity:1;transform:none}
+a,.eyebrow b,.src-h b{transition:color var(--slow)}
 
 /* ask ------------------------------------------------------------------- */
 .ask{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px}
 .field{flex:1 1 320px;display:flex;border:1px solid var(--line);background:var(--deep)}
+.field{transition:border-color var(--slow)}
+.field:focus-within{border-color:var(--gold)}
 .field input{flex:1;border:0;background:transparent;color:var(--ink);font:inherit;
   padding:14px 15px;min-width:0}
 .field input::placeholder{color:var(--ink-2)}
 .field button{border:0;border-left:1px solid var(--line);background:transparent;
   color:var(--gold);padding:0 20px;cursor:pointer;letter-spacing:.1em;
   text-transform:uppercase;font-size:.68rem}
+.field button{transition:background var(--slow),color var(--slow)}
 .field button:hover{background:var(--gold);color:var(--night)}
 .mic{border:1px solid var(--gold);background:var(--gold);color:var(--night);
   padding:0 20px;cursor:pointer;display:flex;gap:11px;align-items:center;min-height:48px;
   text-transform:uppercase;font-size:.68rem;font-weight:700;letter-spacing:.1em;
   touch-action:none}
+.mic{transition:background var(--slow),border-color var(--slow),color var(--slow)}
 .mic:hover{background:var(--amber);border-color:var(--amber)}
 .mic[aria-pressed="true"]{background:var(--pink);border-color:var(--pink);color:#fff}
 .mic .bulb{width:9px;height:9px;border-radius:50%;background:currentColor;flex:none}
@@ -115,6 +133,7 @@ section{padding:clamp(28px,5vh,52px) 0}
 .egs{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}
 .egs button{font-size:.68rem;color:var(--ink);background:var(--deep);border:1px solid var(--line);
   padding:7px 12px;cursor:pointer;display:flex;gap:8px;align-items:baseline}
+.egs button{transition:border-color var(--slow),color var(--slow),background var(--slow)}
 .egs button:hover{border-color:var(--gold);color:var(--gold)}
 .egs button i{font-style:normal;color:var(--ink-2);font-size:.6rem;letter-spacing:.1em;
   text-transform:uppercase}
@@ -213,8 +232,9 @@ section{padding:clamp(28px,5vh,52px) 0}
 /* requirements ---------------------------------------------------------- */
 .reqs{display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));
   border:1px solid var(--line);border-bottom:0}
-.req{padding:16px;border-right:1px solid var(--line-2);border-bottom:1px solid var(--line);
-  background:var(--deep)}
+.req{padding:20px 18px;border-right:1px solid var(--line-2);border-bottom:1px solid var(--line);
+  background:var(--deep);transition:border-color var(--slow),background var(--slow)}
+.req:hover{border-color:var(--gold)}
 .req u{text-decoration:none;color:var(--gold);font-size:.62rem;letter-spacing:.18em}
 .req h3{font-family:var(--disp);font-size:.94rem;font-weight:700;letter-spacing:-.01em;
   margin:5px 0 7px;color:var(--ink)}
@@ -248,7 +268,7 @@ footer .sig{margin-left:auto;color:var(--gold);letter-spacing:.18em;text-transfo
       are drawn <em>outside</em> the walls at the same scale, which is why they run off the
       screen.</p>
 
-    <div class="facts">
+    <div class="facts reveal stagger">
       <div class="fact"><b>45.2<small>ms</small></b><span>P50 · 1500/1500 in budget</span></div>
       <div class="fact"><b>8</b><span>chunking strategies</span></div>
       <div class="fact"><b>0.892</b><span>recall@50 · human qrels</span></div>
@@ -270,7 +290,7 @@ footer .sig{margin-left:auto;color:var(--gold);letter-spacing:.18em;text-transfo
         <canvas class="meter" id="meter" width="156" height="48" aria-hidden="true"></canvas>
       </button>
     </form>
-    <div class="egs" id="egs">
+    <div class="egs reveal stagger" id="egs">
       <button type="button" data-q="what is a corporation">what is a corporation</button>
       <button type="button" data-q="কী চর্বি দিয়ে তৈরি">কী চর্বি দিয়ে তৈরি <i>bn</i></button>
       <button type="button" data-q="प्रोटीन क्या है">प्रोटीन क्या है <i>hi</i></button>
@@ -324,7 +344,7 @@ footer .sig{margin-left:auto;color:var(--gold);letter-spacing:.18em;text-transfo
 
   <section class="reveal">
     <div class="eyebrow"><b>03</b> against the brief <s></s></div>
-    <div class="reqs">
+    <div class="reqs reveal stagger">
       <div class="req"><u>REQ 1</u><h3>Speech-to-text</h3><p><b>Sarvam</b>, batch and streaming.
         520 / 856 ms P50/P100 over real clips, four languages transcribed correctly.</p></div>
       <div class="req"><u>REQ 2</u><h3>Chunking, vast</h3><p><b>Eight strategies</b> on one corpus
@@ -703,11 +723,40 @@ m.addEventListener("keyup",   e => { if(e.key===" "||e.key==="Enter"){ e.prevent
 /* reveal on scroll, and never a reason to hide content from anyone who cannot scroll */
 (function reveal(){
   const els = [...document.querySelectorAll(".reveal")];
+  // index each child so .stagger can delay it: a grid arrives as a sequence, not a slab
+  document.querySelectorAll(".stagger").forEach(g =>
+    [...g.children].forEach((c,i) => c.style.setProperty("--i", i)));
   if(!("IntersectionObserver" in window)) return els.forEach(e => e.classList.add("in"));
   const io = new IntersectionObserver(es => es.forEach(e => {
     if(e.isIntersecting){ e.target.classList.add("in"); io.unobserve(e.target); }
   }), {rootMargin:"0px 0px -8% 0px"});
   els.forEach(e => io.observe(e));
+  // the hero is above the fold and should not wait to be scrolled to
+  requestAnimationFrame(() => document.querySelectorAll(".hero .reveal, .facts")
+    .forEach(e => e.classList.add("in")));
+})();
+
+/* Smooth scroll, the reference site's other signature -- ~20 lines instead of a library,
+   and it steps aside for anyone who asked the OS for less motion, for keyboard paging, and
+   for touch, where the native inertia is already better than anything re-implemented. */
+(function smooth(){
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if(reduce || matchMedia("(pointer: coarse)").matches) return;
+  let target = scrollY, cur = scrollY, running = false;
+  const clamp = v => Math.max(0, Math.min(v, document.body.scrollHeight - innerHeight));
+  addEventListener("wheel", e => {
+    if(e.ctrlKey) return;                   // pinch-zoom is not scrolling
+    e.preventDefault();
+    target = clamp(target + e.deltaY);
+    if(!running){ running = true; requestAnimationFrame(step); }
+  }, {passive:false});
+  function step(){
+    cur += (target - cur) * 0.12;           // lerp; quart-ish without a curve to evaluate
+    if(Math.abs(target - cur) < 0.4){ cur = target; running = false; }
+    scrollTo(0, cur);
+    if(running) requestAnimationFrame(step);
+  }
+  addEventListener("keydown", () => { target = cur = scrollY; });   // let keys own the page
 })();
 
 health();
