@@ -9,7 +9,7 @@ CLIPS ?= data/audio
 PORT ?= 8000
 N ?= 300
 
-.PHONY: all corpus chunking calibrate latency guardrails demo serve tune llm-probe stt legs submit check venv clean
+.PHONY: all corpus chunking calibrate latency guardrails demo serve tune llm-probe stt legs ann verify-tune submit check venv clean
 
 all: submit
 
@@ -33,6 +33,16 @@ latency:
 ## D4 -- 280 labelled queries, both error directions
 guardrails:
 	$(PY) d4/run.py
+
+## exact vs HNSW: what the approximation costs, and the corpus size where it starts paying.
+## EMBEDDER=hash keeps torch out of the process so faiss can build on every core -- the
+## vectors are read from disk, nothing is embedded, so the backend is irrelevant here.
+ann:
+	EMBEDDER=hash $(PY) d1/ann.py
+
+## gate 4, both verifiers, on the same 280 rows -> reports/verify.md
+verify-tune:
+	$(PY) d4/verify_tune.py
 
 ## ask one question through the serving path and watch the clock
 ## make demo Q="..."   |   make demo AUDIO=data/audio/clip.wav
@@ -84,6 +94,8 @@ check:
 	$(PY) service/calibrate.py --selfcheck
 	$(PY) service/tune.py --selfcheck
 	$(PY) service/llm.py --selfcheck
+	$(PY) d1/ann.py --selfcheck
+	$(PY) d4/verify_tune.py --selfcheck
 	$(PY) d1/ingest.py --selfcheck
 	$(PY) stt/sarvam.py
 	$(PY) stt/measure.py --selfcheck

@@ -15,6 +15,8 @@ make demo         # ask one question through the serving path, with its spans
 make serve        # the browser demo: mic in, answer + timings out, on localhost:8000
 make tune         # sweep the answer path against MS MARCO's own answers
 make legs         # both excluded legs measured: STT before t0, TTS after t1
+make ann          # exact vs faiss HNSW: recall cost + the crossover -> reports/ann.md
+make verify-tune  # gate 4 both ways on the same 280 rows -> reports/verify.md
 make submit       # chunking -> calibrate -> guardrails -> latency, then splices the tables here
 ```
 
@@ -59,6 +61,8 @@ cited    : s7 metadata-filtered:bn:1055324:0:0
 
 spans ms : guards 0.02  embed 17.25  retrieve 1.31  rerank 35.02  generate 23.12  verify 0.04
 total    : 76.85 ms of 200 ms -- within budget
+                                  ^ one transcript on one machine; the measured
+                                    distribution is D3's table, not this line
 ```
 
 This one is also the clearest single illustration of what the reranker bought. Before it, the
@@ -149,7 +153,7 @@ Speaking needs `SARVAM_API_KEY` in the server's environment; typing into the box
 nothing. `STT_PROVIDER=mock make serve` exercises the whole audio path offline.
 
 To regenerate every table instead of asking one question: `make submit` (~30 min), or
-`make check` for the 23 self-checks, which need no model and no network.
+`make check` for the 25 self-checks, which need no model and no network.
 
 ## Against the brief
 
@@ -157,9 +161,9 @@ To regenerate every table instead of asking one question: `make submit` (~30 min
 |---|---|---|
 | 1 | **Speech-to-text: Sarvam or ElevenLabs** | Sarvam (`stt/sarvam.py`), batch + streaming. Live on real clips: **520.7 / 856.5 / 856.5 ms** P50/P95/P100 over 6 recordings, all four languages transcribed correctly |
 | 2 | **Chunking must be vast** | **eight** strategies compared on one corpus, one embedder, one set of index params (`d1/`): fixed 256/64, recursive 320/80, sentence-window, semantic-drift, proposition, parent-document, metadata-filtered, multi-granularity. Scored at passage granularity against **human `is_selected` qrels**, winner **s7 at 0.892 recall@50** |
-| 3 | **Under 200 ms** | **PASS, 1500/1500 requests**, across warm, cold and concurrency-4. P50 **48.0 ms**, slowest single request **175 ms**. Not a claim: `harness/budget.py` refuses to enter a stage that cannot finish |
+| 3 | **Under 200 ms** | **PASS, 1500/1500 requests**, across warm, cold and concurrency-4. P50 **45.2 ms**, slowest single request **176.4 ms**. Not a claim: `harness/budget.py` refuses to enter a stage that cannot finish. Two dense indexes behind one call — exact and faiss HNSW — with the corpus size where the graph starts paying **measured**, not asserted (`make ann`) |
 | 4 | **P50 / P70 / P100 across many queries** | `reports/latency.md`, **500 frozen queries x 3 modes**, per stage and end to end, nearest-rank, never a single best-case run |
-| 5 | **Harness, not a raw prompt** | six timed stages under one budget object, a degradation ladder, bounded deadlines on every unbounded call, retries only where retrying is affordable, structured JSON in and out (`service/server.py`), and `service/llm.py` — structured output, parse-or-fallback, bounded retries, deadline, error recovery |
+| 5 | **Harness, not a raw prompt** | six timed stages under one budget object, a degradation ladder, bounded deadlines on every unbounded call, retries only where retrying is affordable, structured JSON in and out (`service/server.py`), and `service/llm.py` — structured output, parse-or-fallback, bounded retries, deadline, error recovery, and **one tool** (`search_corpus`, capped at a single hop) |
 | 6 | **Guardrails** | four gates, graded on **280 labelled queries** (`reports/guardrails.md`): correct abstention **84%**, false abstention **3.8%** against a <8% target, injection resistance **100%**, plus a confusion matrix and per-gate attribution |
 
 ### The one place the brief and the measurements disagree
@@ -223,6 +227,52 @@ human answer structurally favours extraction, because the human answer and the e
 sentence are drawn from the same passage vocabulary. It is the wrong metric for a paraphrase,
 and it is the metric this repo has, so it is reported with the caveat rather than dropped.
 
+### The one tool the generator gets
+
+Requirement 5 names tool calls, and a harness that only ever does prompt-in/JSON-out is not
+one. So the LLM path is given exactly one tool, and the interesting parts are the limits:
+
+```python
+search_corpus(query: str, lang: "en"|"hi"|"ta"|"bn" = None, k: int = 3) -> passages
+```
+
+- **One hop, enforced in the loop, not requested in the prompt.** `tools` is dropped from
+  the request body once `hops == MAX_HOPS`, so a second search is not something the model
+  can decide to take. An unbounded hop count turns a deadline-bounded generator into an
+  agent loop with a vendor deciding when it ends.
+- **It retrieves the way the request did.** `fuse()` is shared with `retrieve()`; a tool
+  that ranked its own passages differently would append results that are not comparable to
+  the context they are appended to, and the model reads both as one numbered list.
+- **Numbering continues across the hop.** Context is `[1..n]`, tool results are `[n+1..]`,
+  and the citation list in `upgrade_with_llm` grows in the same order — so `{"passage": 4}`
+  pointing into a tool result still resolves to a real chunk id, and gate 4 verifies the
+  answer against the passage the model actually used.
+- **Chunks already in the context are skipped**, so a hop cannot spend itself returning what
+  the model has already read.
+- **Every failure is a tool message, not an exception.** Unknown tool, empty query,
+  unparseable arguments, a search that raises — each comes back as text the model can act
+  on, and the answer falls back to the context it already had. Four calls in one turn get
+  the first answered and the rest declined *with a reply each*, because a tool call without
+  a matching tool message makes the next request malformed.
+
+When it fires, measured on `openai/gpt-oss-20b`:
+
+```
+context does not answer the question    1 hop    1126 ms    cites the retrieved passage
+context does answer the question        0 hops    269 ms    no search, no round trip
+```
+
+That second row is the one worth reading. A model handed a search tool will call it on
+questions the context already answers unless the prompt says when not to, so rule 3 is
+*replaced* in the tool variant rather than added to — a system prompt carrying both "refuse
+when the context is thin" and "search when it is thin" is a coin flip. `LLM_TOOLS=off`
+serves the no-tool path for comparison, and `search=None` is the default everywhere else, so
+the request body behind every measurement in this README is byte-identical to the one those
+tables describe.
+
+The hop costs a full round trip, which is why it lives on the LLM path and not in the 200 ms
+one: a system that cannot afford one generation call cannot afford two.
+
 ## The shared spine
 
 | | |
@@ -251,6 +301,8 @@ stt/measure.py        both excluded legs, measured -> data/excluded_legs.json
 tts/sarvam.py         Sarvam bulbul: speaks the answer, and speaks a refusal as a refusal
 d3/                   replay 500 frozen queries, reduce the trace log late
 d4/                   280 labelled queries, confusion matrix, per-gate attribution
+d4/verify_tune.py     gate 4 both ways on one set: the measurement that kept lexical
+d1/ann.py             exact vs HNSW: recall cost, and the corpus size where the graph pays
 ```
 
 ## D1 — chunking breadth
@@ -267,14 +319,14 @@ the corpus. That is what pulls the strategies apart: on the synthetic corpus eve
 <!-- D1:START -->
 | strategy                   | recall@50 | nDCG@10 | MRR@10 | size  | build | p50   |
 |----------------------------|-----------|---------|--------|-------|-------|-------|
-| s1 fixed 256/64            |     0.888 |   0.577 |  0.501 |  20.0 |  1.09 |  0.34 |
-| s2 recursive 320/80        |     0.889 |   0.577 |  0.501 |  19.9 |  1.11 |  0.29 |
-| s3 sentence-window         |     0.746 |   0.453 |  0.392 |  85.0 |  2.11 |  1.27 |
-| s4 semantic drift          |     0.787 |   0.488 |  0.425 |  55.1 |  5.17 |  0.97 |
-| s5 proposition (sampled)   |     0.832 |   0.492 |  0.430 |  12.1 |  0.18 |  0.09 |
-| s6 parent-document         |     0.878 |   0.569 |  0.494 |  20.8 |  1.39 |  0.32 |
-| s7 metadata-filtered       |     0.892 |   0.580 |  0.504 |  20.0 |  1.57 |  0.29 |
-| s8 multi-granularity       |     0.812 |   0.517 |  0.451 | 125.2 |  4.92 |  2.25 |
+| s1 fixed 256/64            |     0.888 |   0.577 |  0.501 |  20.0 |  1.37 |  0.46 |
+| s2 recursive 320/80        |     0.889 |   0.577 |  0.501 |  19.9 |  2.18 |  0.38 |
+| s3 sentence-window         |     0.746 |   0.453 |  0.392 |  85.0 |  3.06 |  2.18 |
+| s4 semantic drift          |     0.787 |   0.488 |  0.425 |  55.1 |  6.72 |  1.37 |
+| s5 proposition (sampled)   |     0.832 |   0.492 |  0.430 |  12.1 |  0.28 |  0.20 |
+| s6 parent-document         |     0.878 |   0.569 |  0.494 |  20.8 |  1.89 |  0.31 |
+| s7 metadata-filtered       |     0.892 |   0.580 |  0.504 |  20.0 |  1.90 |  0.29 |
+| s8 multi-granularity       |     0.812 |   0.517 |  0.451 | 125.2 |  5.85 |  2.33 |
 <!-- D1:END -->
 
 ## D2 — the 200 ms window
@@ -399,11 +451,57 @@ their provenance in `data/score_floor.json`. Neither is fitted on the set that g
 both sweeps are constrained by D4's stated false-abstention target rather than by whichever
 number flatters the confusion matrix.
 
+## The vector index — exact, HNSW, and where the crossover actually is
+
+Requirement 3 says "vector DB retrieval", and for most of this repo's life the dense index
+was a float32 matrix and a full dot product, with `faiss/qdrant behind Index.search()` written
+in a comment as the upgrade path. The seam is now filled: `INDEX=hnsw` builds a faiss
+`IndexHNSWFlat` at `freeze()`, and `make ann` measures what the swap costs instead of
+asserting it.
+
+Inner product, not L2. The vectors are already unit length, so inner product *is* cosine and
+the scores come back on the scale gate 2's floor was calibrated against — an L2 graph would
+return the same neighbours behind a score that silently invalidates a measured threshold.
+
+<!-- ANN:START -->
+| chunks | vectors | exact P50 | exact P100 | hnsw P50 | hnsw P100 | build | recall@50 vs exact |
+|---|---|---|---|---|---|---|---|
+| 12,024 | 18 MB | 0.28 ms | 1.76 ms | 0.13 ms | 0.84 ms | 0.3 s | 0.999 |
+| 50,000 | 77 MB | 1.45 ms | 1.67 ms | 0.21 ms | 0.30 ms | 9.3 s | — |
+| 200,000 | 307 MB | 5.27 ms | 6.14 ms | 0.39 ms | 0.47 ms | 98.4 s | — |
+<!-- ANN:END -->
+
+Exact grows 19× across that range and the graph grows 3×. The corpus this repo serves is
+already past the crossover — and **`INDEX=exact` is still the default**, on the same evidence.
+Dense search is 1.3 ms of a 48 ms request, so the 0.15 ms the graph saves is under one percent
+of a request and inside the run-to-run noise of the D3 table, while it costs 0.1% of the true
+neighbours plus a build step and a dependency. Paying that for noise is a habit, not a trade.
+
+What the table buys is the claim underneath the D3 verdict. `dense + bm25 + rrf` is the one
+row of six that is linear in corpus size; at MSMARCO-XI's full 8.8M passages exact search is
+the stage that ends the 200 ms budget, and the graph is the reason that is a configuration
+change rather than a rewrite. Recall cost measured, crossover measured, one environment
+variable.
+
+**A note on the vectors above 12,024.** They are the real vectors resampled with noise, not
+new corpus. Search cost depends on count and dimensionality, so the latency column is honest;
+retrieval quality is meaningless there, which is why recall is only reported where the vectors
+mean something. Random unit vectors were the wrong choice on purpose — in 384 dimensions they
+are all equidistant, HNSW has no structure to exploit, and the benchmark would publish the
+graph's worst case as its normal one.
+
 ## D3 — latency analytics
 
 <!-- D3V:START -->
-> **200 ms budget: PASS.** 1500/1500 requests inside the window across every mode (warm 0/500, cold 0/500, conc 0/500 over budget). Slowest single request 175.2 ms. Excluded legs are listed below and are not part of this verdict.
+> **200 ms budget: PASS.** 1500/1500 requests inside the window across every mode (warm 0/500, cold 0/500, conc 0/500 over budget). Slowest single request 176.4 ms. Excluded legs are listed below and are not part of this verdict.
 <!-- D3V:END -->
+
+**What this verdict is measured on, because the number does not transfer for free.** The
+corpus is 1200 MS MARCO passages — 12,024 chunks under s7. `dense + bm25 + rrf` is the one
+row of six that does not carry to MSMARCO-XI's full 8.8M passages: the other five are
+per-query costs and are indifferent to corpus size. That used to be the end of the paragraph.
+It is now a table — see **the vector index** below, where both backends are measured across a
+16× range and the crossover is a number rather than an expectation.
 
 500 frozen queries (350 in-domain, 100 spoken-style paraphrases, 50 out-of-domain), cold
 then warm, one JSONL line per query with all span timings — never a pre-computed average.
@@ -415,13 +513,13 @@ concurrency-4 pass — because reporting the friendliest of three is not a verdi
 | stage             |  P50 |  P70 |  P95 | P100 |
 |-------------------|------|------|------|------|
 | input guards      | 0.01 | 0.01 | 0.02 | 0.03 |
-| embed query       | 8.75 | 10.63 | 14.17 | 18.51 |
-| dense + bm25 + rrf | 1.34 | 2.03 | 3.70 | 6.29 |
-| rerank            | 25.92 | 32.07 | 48.80 | 68.94 |
-| generate          | 15.38 | 19.15 | 30.12 | 76.77 |
-| verify            | 0.05 | 0.06 | 0.10 | 0.31 |
-| END-TO-END (warm) | 47.97 | 62.22 | 84.26 | 118.32 |
-| END-TO-END (cold) | 58.12 | 67.67 | 86.08 | 143.12 |
+| embed query       | 9.07 | 9.56 | 10.71 | 15.43 |
+| dense + bm25 + rrf | 1.38 | 2.01 | 3.15 | 4.28 |
+| rerank            | 20.93 | 29.38 | 40.23 | 43.92 |
+| generate          | 14.31 | 17.63 | 24.59 | 90.56 |
+| verify            | 0.05 | 0.06 | 0.08 | 0.24 |
+| END-TO-END (warm) | 45.21 | 53.88 | 69.61 | 136.03 |
+| END-TO-END (cold) | 49.03 | 56.43 | 74.04 | 134.68 |
 <!-- D3:END -->
 
 ## D4 — guardrail metrics
@@ -442,9 +540,48 @@ The hallucination rate is the least interesting number here and the report says 
 the generator is extractive, so every answer is a sentence lifted from the passage it cites
 and is "supported" by construction. The failure this system actually has is the one the
 confusion matrix shows — citing a real passage that does not answer the question. Catching
-that is gate 4's job, and a lexical verifier rejects only ~9% of wrong citations at the false-
-abstention budget it is allowed. An NLI cross-encoder is the named upgrade, and it is the
-single change that would move this table most.
+that is gate 4's job.
+
+### The NLI verifier, built and measured — and it lost
+
+This README used to end that paragraph by naming an NLI cross-encoder as "the single change
+that would move this table most". It is now built (`VERIFY=nli`, a multilingual mDeBERTa-XNLI
+model asked whether the cited passage entails the answer) and `make verify-tune` runs both
+verifiers over the same 280 rows, one variable changed. The prediction was wrong:
+
+<!-- VERIFY:START -->
+| metric | lexical | nli | verdict |
+|---|---|---|---|
+| correct abstention (150 should-abstain) | 84.0% | 78.0% | worse (-6.0%) |
+| false abstention (130 should-answer) | 3.8% | 9.2% | worse (+5.4%) |
+| near-miss caught | 56.7% | 43.3% | worse (-13.3%) |
+| hallucination rate | 0.0% | 0.0% | — |
+| injection resistance | 100.0% | 100.0% | — |
+| answers given | 149 | 151 | — |
+| gate 4 firings | 52 | 45 | — |
+| end-to-end P50 | 38.2 ms | 74.6 ms | — |
+| end-to-end P100 | 112.8 ms | 535.9 ms | — |
+<!-- VERIFY:END -->
+
+Worse in both directions at once, so there is no trade to weigh: it refuses more of what it
+should answer *and* catches less of what it should refuse, including on near-miss, the bucket
+it was supposed to fix. `make calibrate` says the same thing from the other side — swept on
+the held-out set, entailment rejects 12.2% of wrong citations where lexical coverage rejects
+22.7%, at 8.0% false abstention against 3.5%. And its P100 breaks the 200 ms budget, because
+the 45 ms bound is on the *wait* and a forward pass already entered cannot be interrupted —
+the same finding this repo recorded for the encoder.
+
+So lexical stays the default, and the reason is a table rather than a preference. The likely
+cause is in `entails_by`: the hypothesis is the question glued to the answer, which is a crude
+substitute for converting a question into a declarative statement, and XNLI models are trained
+on premise/hypothesis pairs rather than on QA verification. That is a fixable reason, which is
+why `VERIFY=nli` stays in the repo instead of being deleted — unlike the lexical reranker,
+which was deleted for failing the same bar.
+
+One caveat on that table, stated because it changes what it can be used for: it was measured
+on a busier machine than the D3 and D4 tables, so the absolute latencies are inflated. Both
+columns were measured back to back in one process under the same conditions, so the
+*comparison* is sound; the absolute milliseconds are not comparable to the D3 table above.
 
 ## What is real and what is a stand-in
 
@@ -459,9 +596,9 @@ upgrade path:
 | speech-to-text | **real** — Sarvam batch + streaming, retried outside the budget where retrying is affordable | — |
 | text-to-speech | **real** — Sarvam bulbul, four languages, measured at ~680 ms P50 for an answer-length line | — |
 | gate 2 floor | **measured** — swept on D3's frozen set, stamped in `data/score_floor.json` | — |
-| index | exact search (dense matmul / sparse postings) | faiss/qdrant HNSW behind `Index.search()` |
+| index | exact by default, and **no longer a stand-in**: `INDEX=hnsw` is a real faiss HNSW graph behind the same `Index.search()`, with its recall cost (99.9% of exact's top-50) and its crossover measured in `reports/ann.md` | qdrant/served index, if the corpus outgrows one process |
 | generation | extractive, and **tuned**: the sentence is chosen by embedding, in the top chunk only (+0.016 answer F1 [+0.006, +0.028] over lexical choice, 1200 queries) | LLM at temperature 0 behind `generate()` |
-| gate 4 verifier | lexical support + coverage, floor measured | NLI cross-encoder behind `verify()` — the highest-value swap in the repo |
+| gate 4 verifier | lexical support + coverage, floor measured — and **kept after the NLI alternative was built and measured worse in both directions** (`reports/verify.md`) | a QA-verification model, or a question-to-statement rewrite before the NLI pair is scored — the reason entailment lost is in the hypothesis, not in the idea |
 | reranker | **real** — mMiniLMv2-L12-H384 cross-encoder over the top 4, multilingual because three quarters of the corpus is not English (+0.023 answer F1 [+0.011, +0.035], top-1 34.6% → 41.5%, 1200 queries). The lexical stand-in it replaced *hurt* the same column (−2.7 pts top-1) and was deleted rather than kept | `RERANK=off` serves the fused order, `RERANK=lexical` restores the harmful stand-in for comparison |
 | hybrid fusion | dense + BM25 at weight 0.1, chosen by sweep — equal weight cost 5.7 pts of top-1 to buy 1.7 pts of recall@50 | reciprocal-rank fusion with a trained weight |
 | D4 abstain rows | real held-out MS MARCO queries (gold absent in every language) + hand-written unsafe/injection lists | — |

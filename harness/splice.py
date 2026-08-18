@@ -1,4 +1,4 @@
-"""make submit: splice the three report tables into README.md between markers.
+"""make submit: splice the report tables into README.md between markers.
 
 The README never holds a number that was typed by hand -- it holds the same table the
 report generated, or nothing.
@@ -17,6 +17,11 @@ SECTIONS = {
     # the one sentence a reader looks for, and it is exactly the one worth never hand-editing
     "D3V": ("reports/latency.md", r"> \*\*[\d.]+ ms budget.*?\n"),
     "D4": ("reports/guardrails.md", r"\| metric.*?\n(?:\|.*\n)+"),
+    # not part of `make submit`: both are their own targets and neither is regenerated on
+    # every run. Splicing them anyway means the README shows the last measured table rather
+    # than a hand-copied summary of it, which is the same rule as everything above.
+    "ANN": ("reports/ann.md", r"\| chunks.*?\n(?:\|.*\n)+"),
+    "VERIFY": ("reports/verify.md", r"\| metric.*?\n(?:\|.*\n)+"),
 }
 
 

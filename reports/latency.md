@@ -5,8 +5,8 @@
 | machine | arm64 / 10 vCPU |
 | region | local |
 | provider | Darwin |
-| date | 2026-08-17 18:49 IST |
-| commit | 2b3c461 |
+| date | 2026-08-18 17:28 IST |
+| commit | 4433cea |
 | embedder | intfloat/multilingual-e5-small / 384d |
 | python | 3.13.7 |
 | seed | 42 |
@@ -14,7 +14,7 @@
 | budget | 200 ms |
 
 
-> **200 ms budget: PASS.** 1500/1500 requests inside the window across every mode (warm 0/500, cold 0/500, conc 0/500 over budget). Slowest single request 175.2 ms. Excluded legs are listed below and are not part of this verdict.
+> **200 ms budget: PASS.** 1500/1500 requests inside the window across every mode (warm 0/500, cold 0/500, conc 0/500 over budget). Slowest single request 176.4 ms. Excluded legs are listed below and are not part of this verdict.
 
 
 ## The window
@@ -35,15 +35,15 @@ excluded legs (P50 / P95 / P100, ms): STT 520.7 / 856.5 / 856.5 over 6 clips via
 | stage             |  P50 |  P70 |  P95 | P100 |
 |-------------------|------|------|------|------|
 | input guards      | 0.01 | 0.01 | 0.02 | 0.03 |
-| embed query       | 8.75 | 10.63 | 14.17 | 18.51 |
-| dense + bm25 + rrf | 1.34 | 2.03 | 3.70 | 6.29 |
-| rerank            | 25.92 | 32.07 | 48.80 | 68.94 |
-| generate          | 15.38 | 19.15 | 30.12 | 76.77 |
-| verify            | 0.05 | 0.06 | 0.10 | 0.31 |
-| END-TO-END (warm) | 47.97 | 62.22 | 84.26 | 118.32 |
-| END-TO-END (cold) | 58.12 | 67.67 | 86.08 | 143.12 |
+| embed query       | 9.07 | 9.56 | 10.71 | 15.43 |
+| dense + bm25 + rrf | 1.38 | 2.01 | 3.15 | 4.28 |
+| rerank            | 20.93 | 29.38 | 40.23 | 43.92 |
+| generate          | 14.31 | 17.63 | 24.59 | 90.56 |
+| verify            | 0.05 | 0.06 | 0.08 | 0.24 |
+| END-TO-END (warm) | 45.21 | 53.88 | 69.61 | 136.03 |
+| END-TO-END (cold) | 49.03 | 56.43 | 74.04 | 134.68 |
 
-degradation rate: 0.6%   cache hit rate: 9.8%   n=500, seed 42   over-budget: 0/500 (0.0%)
+degradation rate: 0.0%   cache hit rate: 9.8%   n=500, seed 42   over-budget: 0/500 (0.0%)
 
 
 > 9.8% of warm queries hit the semantic cache. The cache-off cold row is published beside the warm one; read it as the cost of a first-time question.
@@ -51,12 +51,12 @@ degradation rate: 0.6%   cache hit rate: 9.8%   n=500, seed 42   over-budget: 0/
 
 ## P100, said out loud
 
-P100 over 500 samples is one observation: it is the max and it is unstable by construction. P95 = 84.3 ms, P99 = 99.0 ms, P100 = 118.3 ms. P100 = 118.3 ms on `l261` (in_domain, en); the dominant stage was **generate** at 55.0 ms, fallbacks fired: none.
+P100 over 500 samples is one observation: it is the max and it is unstable by construction. P95 = 69.6 ms, P99 = 80.1 ms, P100 = 136.0 ms. P100 = 136.0 ms on `s077` (spoken, hi); the dominant stage was **generate** at 90.6 ms, fallbacks fired: none.
 
 
 ## Concurrency
 
-A separate `--concurrency 4` pass over the same 500 queries: P50 110.8 ms, P95 152.7 ms, over-budget 0/500.
+A separate `--concurrency 4` pass over the same 500 queries: P50 114.5 ms, P95 155.5 ms, over-budget 0/500.
 
 
 ![per-stage latency](latency.svg)

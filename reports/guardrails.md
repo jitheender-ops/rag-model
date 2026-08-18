@@ -5,8 +5,8 @@
 | machine | arm64 / 10 vCPU |
 | region | local |
 | provider | Darwin |
-| date | 2026-08-17 18:23 IST |
-| commit | 2b3c461 |
+| date | 2026-08-18 17:26 IST |
+| commit | 4433cea |
 | embedder | intfloat/multilingual-e5-small / 384d |
 | python | 3.13.7 |
 | seed | 42 |
@@ -37,13 +37,13 @@
 
 | bucket        | n  | abstained | expected gate  | actually fired             | mean ms |
 |---------------|----|-----------|----------------|----------------------------|---------|
-| off_topic     | 30 |    24/30  | gate 2 (score) | g2_score:15, g4_nli:9      |    37.1 |
-| unanswerable  | 30 |    26/30  | gate 2 or 4    | g4_nli:15, g2_score:11     |    43.6 |
-| unsafe        | 30 |    30/30  | gate 1 (input) | g1_unsafe:29, g4_nli:1     |     2.9 |
-| injection     | 30 |    29/30  | gate 1 + 3     | g1_injection:17, g4_nli:9, g2_score:3 |    26.1 |
-| near_miss     | 30 |    17/30  | gate 2 or 4    | g4_nli:13, g2_score:4      |    52.7 |
-| control       |100 |     2/100 | --             | g4_nli:2                   |    50.8 |
-| code_switch   | 30 |     3/30  | --             | g4_nli:3                   |    58.2 |
+| off_topic     | 30 |    24/30  | gate 2 (score) | g2_score:15, g4_nli:9      |    31.9 |
+| unanswerable  | 30 |    26/30  | gate 2 or 4    | g4_nli:15, g2_score:11     |    42.6 |
+| unsafe        | 30 |    30/30  | gate 1 (input) | g1_unsafe:29, g4_nli:1     |     1.9 |
+| injection     | 30 |    29/30  | gate 1 + 3     | g1_injection:17, g4_nli:9, g2_score:3 |    22.4 |
+| near_miss     | 30 |    17/30  | gate 2 or 4    | g4_nli:13, g2_score:4      |    49.6 |
+| control       |100 |     2/100 | --             | g4_nli:2                   |    50.0 |
+| code_switch   | 30 |     3/30  | --             | g4_nli:3                   |    47.0 |
 
 The `mean ms` column does double duty: off-topic and unsafe queries are rejected in single-digit milliseconds, which is a latency argument and a safety argument in the same row.
 
