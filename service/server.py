@@ -36,7 +36,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from service.pipeline import SCORE_FLOOR, COVERAGE_FLOOR, answer, load_index
 
-PAGE = os.getenv("PAGE", "Voice RAG Live Demo.html")
+PAGE = os.getenv("PAGE", "web/index.html")
 MAX_BODY = int(os.getenv("MAX_BODY", str(25 * 1024 * 1024)))     # 25 MB of audio is plenty
 N_CITATIONS = 4
 

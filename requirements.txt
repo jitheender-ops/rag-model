@@ -1,0 +1,8 @@
+# The serving path only. Not the bench: d1/ann.py wants faiss and d4/verify_tune.py wants
+# the NLI model, and neither runs in the container -- they produce reports, and the reports
+# are committed. Installing them here would add ~1.5 GB to an image for code the box never
+# executes.
+#
+# torch is pinned to the CPU wheel index in the Dockerfile: the default wheel carries CUDA
+# and is ~2.5 GB of driver nobody on a CPU box will ever call.
+sentence-transformers==5.7.0

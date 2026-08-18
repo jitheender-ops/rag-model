@@ -1,0 +1,17 @@
+# the venv is a mac build; the image installs its own
+.venv/
+.git/
+.backup-*/
+__pycache__/
+**/__pycache__/
+*.pyc
+.DS_Store
+# keys are passed as Space secrets at runtime, never baked into a layer
+.env
+# gigabytes of source shards; the frozen corpus in data/ is what the index was built from
+data/raw/
+data/shards/
+data/audio/*
+# the previous frontend: 836 KB of generated bundle, replaced by web/index.html
+Voice RAG Live Demo.html
+*.pdf

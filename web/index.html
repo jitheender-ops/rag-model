@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mic RAG — the 200 ms window</title>
+<style>
+/* ------------------------------------------------------------------ tokens */
+:root{
+  --paper:#E8ECEE; --card:#F2F5F6; --ink:#101619; --ink-2:#47555C;
+  --rule:#C3CCD1; --rule-2:#D8DFE2;
+  --owned:#0A6E86;      /* inside the 200 ms: measured, ours */
+  --owned-soft:#0A6E8622;
+  --vendor:#8A6A18;     /* outside it: a vendor's clock, not ours */
+  --refuse:#8C2F3B;     /* an abstention is a result, not an error */
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --serif:Charter,"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --step:clamp(.72rem,.68rem + .2vw,.8rem);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0C1215; --card:#131C20; --ink:#DFE7EA; --ink-2:#8B9BA2;
+    --rule:#28353A; --rule-2:#1D272B;
+    --owned:#3FB6D2; --owned-soft:#3FB6D226; --vendor:#C79A34; --refuse:#D2707C;
+  }
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--paper); color:var(--ink); font-family:var(--mono);
+  font-size:var(--step); line-height:1.5; padding:clamp(12px,2.5vw,28px);
+  /* chart paper: a grid you can just barely read, the way plotter stock looks */
+  background-image:linear-gradient(var(--rule-2) 1px,transparent 1px),
+                   linear-gradient(90deg,var(--rule-2) 1px,transparent 1px);
+  background-size:28px 28px; background-position:-1px -1px;
+}
+.wrap{max-width:1080px;margin:0 auto}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+:focus-visible{outline:2px solid var(--owned);outline-offset:2px}
+
+/* ------------------------------------------------------------------ chrome */
+.masthead{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:baseline;
+  border-bottom:2px solid var(--ink);padding-bottom:8px;margin-bottom:2px}
+.mark{font-size:1.05rem;font-weight:700;letter-spacing:-.04em}
+.mark b{color:var(--owned)}
+.tag{color:var(--ink-2);letter-spacing:.02em}
+.status{margin-left:auto;display:flex;gap:8px;align-items:center;color:var(--ink-2)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ink-2);flex:none}
+.dot.ok{background:var(--owned)} .dot.warm{background:var(--vendor)}
+.dot.warm{animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.25}}
+
+.lede{font-family:var(--serif);font-size:clamp(.95rem,.9rem + .35vw,1.12rem);
+  line-height:1.5;max-width:62ch;color:var(--ink-2);margin:14px 0 22px}
+.lede em{color:var(--ink);font-style:normal;border-bottom:1px solid var(--owned)}
+
+/* ------------------------------------------------------------------- input */
+.ask{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch;margin-bottom:26px}
+.field{flex:1 1 300px;display:flex;border:1.5px solid var(--ink);background:var(--card)}
+.field input{flex:1;border:0;background:transparent;color:var(--ink);
+  font:inherit;padding:11px 13px;min-width:0}
+.field input::placeholder{color:var(--ink-2)}
+.field button{border:0;border-left:1.5px solid var(--rule);background:transparent;
+  color:var(--ink);font:inherit;padding:0 15px;cursor:pointer}
+.field button:hover{background:var(--owned);color:var(--paper)}
+.mic{border:1.5px solid var(--ink);background:var(--ink);color:var(--paper);
+  font:inherit;padding:11px 20px;cursor:pointer;display:flex;gap:9px;align-items:center;
+  letter-spacing:.04em;text-transform:uppercase;font-size:.72rem;font-weight:700}
+.mic:hover{background:var(--owned);border-color:var(--owned)}
+.mic[aria-pressed="true"]{background:var(--refuse);border-color:var(--refuse)}
+.mic .rec{width:9px;height:9px;border-radius:50%;background:currentColor;flex:none}
+.mic[aria-pressed="true"] .rec{animation:pulse .9s steps(2,end) infinite}
+
+/* ------------------------------------------------------- the ruler (hero) */
+.instrument{border:1.5px solid var(--ink);background:var(--card);margin-bottom:22px}
+.inst-head{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;
+  padding:9px 13px;border-bottom:1px solid var(--rule);color:var(--ink-2)}
+.inst-head strong{color:var(--ink);letter-spacing:.06em;text-transform:uppercase;font-size:.7rem}
+.verdict{margin-left:auto;font-weight:700}
+.verdict.in{color:var(--owned)} .verdict.out{color:var(--refuse)}
+
+/* the track is exactly 200 ms wide. Everything is positioned as a % of that,
+   so the vendor legs genuinely overflow and get clipped by the frame. */
+.track-clip{position:relative;overflow:hidden;padding:48px 0 8px}
+.track{position:relative;height:46px;margin:0 20%;   /* the legs overrun this, and are clipped */
+  border-left:2px solid var(--ink);border-right:2px solid var(--ink);background:var(--paper)}
+.ticks{position:absolute;inset:0;pointer-events:none}
+.tick{position:absolute;top:0;bottom:0;width:1px;background:var(--rule)}
+.tick span{position:absolute;top:-19px;left:50%;transform:translateX(-50%);
+  color:var(--ink-2);font-size:.62rem}
+.bars{position:absolute;inset:0;display:flex;align-items:stretch}
+.seg{position:relative;background:var(--owned);border-right:1px solid var(--paper);
+  min-width:0;transition:width .5s cubic-bezier(.22,1,.36,1)}
+.seg:nth-child(even){filter:brightness(.86)}
+.seg:last-child{border-right:0}
+.leg{position:absolute;top:0;height:46px;background:repeating-linear-gradient(
+    -45deg,var(--vendor),var(--vendor) 5px,transparent 5px,transparent 10px);
+  border-top:1px solid var(--vendor);border-bottom:1px solid var(--vendor);
+  display:flex;align-items:center;color:var(--vendor);white-space:nowrap}
+.leg.stt{right:100%;justify-content:flex-start;padding-left:8px}
+.leg.tts{left:100%;justify-content:flex-end;padding-right:8px}
+.leg b{background:var(--card);padding:1px 5px;font-size:.66rem;font-weight:700}
+.edge{position:absolute;top:-42px;font-size:.62rem;letter-spacing:.06em;color:var(--ink);font-weight:700;white-space:nowrap}
+.edge.l{left:0;transform:translateX(-50%)} .edge.r{right:0;transform:translateX(50%)}
+
+.legend{display:flex;flex-wrap:wrap;gap:4px 16px;padding:10px 13px;
+  border-top:1px solid var(--rule);color:var(--ink-2);font-size:.68rem}
+.legend span{display:flex;gap:6px;align-items:center}
+.sw{width:11px;height:11px;flex:none;border:1px solid var(--ink)}
+.sw.o{background:var(--owned)} .sw.v{background:var(--vendor)}
+.stages{display:flex;flex-wrap:wrap;gap:2px;padding:0 13px 12px}
+.stage{display:flex;gap:7px;align-items:baseline;padding:3px 9px 3px 0;
+  border-right:1px solid var(--rule-2);color:var(--ink-2)}
+.stage:last-child{border-right:0}
+.stage b{color:var(--ink);font-variant-numeric:tabular-nums}
+
+/* ------------------------------------------------------------------ result */
+.result{border:1.5px solid var(--ink);background:var(--card);margin-bottom:22px}
+.result[data-state="abstained"]{border-color:var(--refuse)}
+.r-head{padding:9px 13px;border-bottom:1px solid var(--rule);color:var(--ink-2);
+  display:flex;flex-wrap:wrap;gap:6px 14px;letter-spacing:.06em;
+  text-transform:uppercase;font-size:.7rem}
+.result[data-state="abstained"] .r-head{color:var(--refuse);border-color:var(--refuse)}
+.answer{font-family:var(--serif);font-size:clamp(1.15rem,1rem + 1vw,1.6rem);
+  line-height:1.42;padding:20px 22px 8px}
+.reason{padding:0 22px 18px;color:var(--ink-2);max-width:70ch}
+.reason code{background:var(--owned-soft);padding:1px 5px}
+.cite{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;
+  padding:11px 13px;border-top:1px solid var(--rule);color:var(--ink-2);font-size:.7rem}
+.cite b{color:var(--owned);word-break:break-all}
+
+.sources{border:1px solid var(--rule);background:var(--card)}
+.sources summary{padding:10px 13px;cursor:pointer;color:var(--ink-2);
+  letter-spacing:.06em;text-transform:uppercase;font-size:.7rem}
+.sources summary:hover{color:var(--ink)}
+.src{padding:12px 14px;border-top:1px solid var(--rule-2);display:grid;
+  grid-template-columns:auto 1fr;gap:4px 14px;align-items:baseline}
+.src .id{color:var(--owned);font-size:.66rem;word-break:break-all}
+.src .tx{font-family:var(--serif);font-size:.92rem;line-height:1.45;color:var(--ink-2);grid-column:1/-1}
+.src.top .tx{color:var(--ink)}
+
+.foot{margin-top:22px;padding-top:10px;border-top:1px solid var(--rule);
+  color:var(--ink-2);font-size:.68rem;display:flex;flex-wrap:wrap;gap:5px 16px}
+.err{border:1.5px solid var(--refuse);background:var(--card);color:var(--refuse);
+  padding:12px 14px;margin-bottom:22px}
+.err b{display:block;margin-bottom:3px}
+@media (max-width:720px){ .track{margin:0 12%} .leg b{font-size:.6rem} }
+@media (prefers-reduced-motion:reduce){ *{animation:none!important;transition:none!important} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="mark">MIC<b>·</b>RAG</div>
+    <div class="tag">voice → retrieval → grounded answer · hi / ta / bn / en</div>
+    <div class="status"><span class="dot" id="dot"></span><span id="stat">checking the index…</span></div>
+  </header>
+
+  <p class="lede">
+    Speak a question. The bar below is a <em>200 millisecond ruler</em>, drawn to scale.
+    Everything this system owns — guards, embedding, retrieval, reranking, answer, grounding
+    check — has to fit between its two walls. Speech-to-text and speech-back are a vendor's
+    clock, not ours, so they are drawn outside the walls at the same scale, which is why they
+    run off the page.
+  </p>
+
+  <form class="ask" id="form">
+    <label class="sr" for="q">Your question</label>
+    <div class="field">
+      <input id="q" name="q" autocomplete="off" placeholder="what is fat made of · কী চর্বি দিয়ে তৈরি">
+      <button type="submit">Ask</button>
+    </div>
+    <button type="button" class="mic" id="mic" aria-pressed="false">
+      <span class="rec"></span><span id="micLabel">Hold to speak</span>
+    </button>
+  </form>
+
+  <div id="errBox"></div>
+
+  <section class="instrument" aria-labelledby="instTitle">
+    <div class="inst-head">
+      <strong id="instTitle">the measured window</strong>
+      <span id="instNote">t0 = final transcript received · t1 = answer flushed</span>
+      <span class="verdict" id="verdict">—</span>
+    </div>
+    <div class="track-clip">
+      <div class="track" id="track">
+        <span class="edge l">t0</span><span class="edge r">t1 · 200 ms</span>
+        <div class="ticks" id="ticks"></div>
+        <div class="bars" id="bars"></div>
+        <div class="leg stt" id="legStt" hidden><b></b></div>
+        <div class="leg tts" id="legTts" hidden><b></b></div>
+      </div>
+    </div>
+    <div class="stages" id="stages"></div>
+    <div class="legend">
+      <span><i class="sw o"></i> inside the budget — measured, ours</span>
+      <span><i class="sw v"></i> vendor leg — measured, excluded, never added to the total</span>
+    </div>
+  </section>
+
+  <section class="result" id="result" data-state="idle">
+    <div class="r-head" id="rHead"><span>no question yet</span></div>
+    <p class="answer" id="answer">Ask something, or hold the button and speak.</p>
+    <p class="reason" id="reason"></p>
+    <div class="cite" id="cite" hidden></div>
+  </section>
+
+  <details class="sources" id="sources" hidden>
+    <summary>the passages it chose from</summary>
+    <div id="srcList"></div>
+  </details>
+
+  <footer class="foot">
+    <span id="footIndex">index —</span>
+    <span id="footFloor">gate 2 floor —</span>
+    <span>refusals are results: the gate that fired is named, with the numbers that fired it</span>
+  </footer>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const API = location.protocol.startsWith("http") ? "" : "http://localhost:8000";
+const BUDGET = 200;
+// server's timings_ms keys, in the order the request actually walks them
+const ORDER = [["guard","guards"],["embed","embed"],["retrieve","retrieve"],
+               ["rerank","rerank"],["generate","generate"],["verify","verify"]];
+
+/* ---------------------------------------------------------------- health */
+async function health(){
+  try{
+    const r = await fetch(API + "/health"); const h = await r.json();
+    const ready = h.status === "ok";
+    $("dot").className = "dot " + (ready ? "ok" : "warm");
+    $("stat").textContent = ready
+      ? `${(h.chunks||0).toLocaleString()} chunks loaded`
+      : "waking up — loading models";
+    $("footIndex").textContent = "index " + (h.index || "—");
+    $("footFloor").textContent = "gate 2 floor " + (h.score_floor ?? "—");
+    if(!ready) setTimeout(health, 2500);
+  }catch{
+    $("dot").className = "dot warm";
+    $("stat").textContent = "no backend — start it with `make serve`";
+    setTimeout(health, 5000);
+  }
+}
+
+/* ----------------------------------------------------------------- ruler */
+function ticks(){
+  const t = $("ticks"); t.innerHTML = "";
+  for(let ms=0; ms<=BUDGET; ms+=50){
+    const d = document.createElement("div");
+    d.className = "tick"; d.style.left = (ms/BUDGET*100) + "%";
+    d.innerHTML = `<span>${ms}</span>`;
+    t.appendChild(d);
+  }
+}
+function draw(p){
+  const bars = $("bars"); bars.innerHTML = "";
+  const total = p.total_ms || 0;
+  for(const [key,label] of ORDER){
+    const ms = (p.timings_ms||{})[key] || 0;
+    if(ms <= 0) continue;
+    const s = document.createElement("div");
+    s.className = "seg"; s.style.width = (ms/BUDGET*100) + "%";
+    s.title = `${label} ${ms.toFixed(2)} ms`;
+    bars.appendChild(s);
+  }
+  // vendor legs, same scale — so they overflow the frame and get clipped
+  const leg = (el, ms, name) => {
+    if(ms == null){ el.hidden = true; return; }
+    el.hidden = false;
+    el.style.width = (ms/BUDGET*100) + "%";
+    el.querySelector("b").textContent = `${name} ${Math.round(ms)} ms`;
+  };
+  leg($("legStt"), p.stt_ms ?? null, "STT");
+  leg($("legTts"), (p.excluded_ms||{}).tts ?? null, "TTS");
+
+  const within = p.within_budget !== false;
+  const v = $("verdict");
+  v.textContent = `${total.toFixed(1)} ms of ${p.budget_ms || BUDGET} ms`;
+  v.className = "verdict " + (within ? "in" : "out");
+
+  const st = $("stages"); st.innerHTML = "";
+  for(const [key,label] of ORDER){
+    const ms = (p.timings_ms||{})[key];
+    if(ms == null) continue;
+    const d = document.createElement("div");
+    d.className = "stage";
+    d.innerHTML = `${label} <b>${ms.toFixed(2)}</b>`;
+    st.appendChild(d);
+  }
+  if((p.degraded||[]).length){
+    const d = document.createElement("div");
+    d.className = "stage";
+    d.innerHTML = `degraded <b>${p.degraded.join(", ")}</b>`;
+    st.appendChild(d);
+  }
+}
+
+/* ---------------------------------------------------------------- render */
+function render(p){
+  draw(p);
+  const res = $("result"), head = $("rHead");
+  const bits = [];
+  if(p.transcript) bits.push(`heard: “${p.transcript}”`);
+  if(p.cache_hit) bits.push("cache hit");
+  if(p.extractive) bits.push("extractive");
+  if(p.lexical_only) bits.push("lexical only");
+
+  if(p.abstained){
+    res.dataset.state = "abstained";
+    head.innerHTML = `<span>refused · ${p.abstain_gate || "gate"}</span>` +
+                     bits.map(b=>`<span>${esc(b)}</span>`).join("");
+    $("answer").textContent = "It did not answer this one.";
+    $("reason").innerHTML = p.abstain_reason
+      ? `The gate that fired is <code>${esc(p.abstain_gate)}</code>, because <code>${esc(p.abstain_reason)}</code>. Refusing is a result here, not a failure — and it costs almost nothing, which is what the ruler above shows.`
+      : `The gate that fired is <code>${esc(p.abstain_gate||"—")}</code>.`;
+    $("cite").hidden = true;
+  }else{
+    res.dataset.state = "answered";
+    head.innerHTML = `<span>answered</span>` + bits.map(b=>`<span>${esc(b)}</span>`).join("");
+    $("answer").textContent = p.answer || "—";
+    $("reason").textContent = "";
+    const top = (p.citations||[])[0];
+    if(top){
+      $("cite").hidden = false;
+      $("cite").innerHTML = `cited <b>${esc(top.chunk_id)}</b> <span>score ${top.score}</span>`;
+    }else $("cite").hidden = true;
+  }
+
+  const list = p.citations || [];
+  $("sources").hidden = list.length === 0;
+  $("srcList").innerHTML = list.map((c,i)=>
+    `<div class="src${i===0?" top":""}"><span class="id">${esc(c.chunk_id)}</span>
+     <span>score ${c.score}</span><p class="tx">${esc(c.text)}</p></div>`).join("");
+}
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function fail(title, detail){
+  $("errBox").innerHTML = `<div class="err"><b>${esc(title)}</b>${esc(detail)}</div>`;
+}
+function busy(on, what){
+  $("instNote").textContent = on ? (what || "measuring…")
+    : "t0 = final transcript received · t1 = answer flushed";
+}
+
+/* ------------------------------------------------------------------ send */
+async function send(body, headers, what){
+  $("errBox").innerHTML = ""; busy(true, what);
+  try{
+    const r = await fetch(API + "/ask", {method:"POST", body, headers});
+    const p = await r.json();
+    if(!r.ok) return fail(`the server said ${r.status}`, p.error || "");
+    render(p);
+  }catch(e){
+    fail("could not reach the backend", String(e.message||e));
+  }finally{ busy(false); }
+}
+
+$("form").addEventListener("submit", e => {
+  e.preventDefault();
+  const text = $("q").value.trim();
+  if(!text) return;
+  send(JSON.stringify({text}), {"Content-Type":"application/json"}, "measuring…");
+});
+
+/* ------------------------------------------------------------------- mic */
+let rec = null, chunks = [];
+async function startRec(){
+  if(!navigator.mediaDevices?.getUserMedia)
+    return fail("this browser has no microphone API", "Type the question instead.");
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    rec = new MediaRecorder(stream);
+    chunks = [];
+    rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+    rec.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      if(!chunks.length) return;
+      const fd = new FormData();
+      fd.append("audio", new Blob(chunks, {type: rec.mimeType || "audio/webm"}), "clip.webm");
+      send(fd, undefined, "transcribing, then measuring…");
+    };
+    rec.start();
+    $("mic").setAttribute("aria-pressed","true");
+    $("micLabel").textContent = "Release to ask";
+  }catch(e){
+    fail("the microphone was not available", "Allow mic access, or type the question.");
+  }
+}
+function stopRec(){
+  if(rec && rec.state !== "inactive") rec.stop();
+  rec = null;
+  $("mic").setAttribute("aria-pressed","false");
+  $("micLabel").textContent = "Hold to speak";
+}
+const m = $("mic");
+m.addEventListener("pointerdown", e => { e.preventDefault(); startRec(); });
+["pointerup","pointerleave","pointercancel"].forEach(ev =>
+  m.addEventListener(ev, stopRec));
+// keyboard: space/enter holds while pressed, so the control works without a pointer
+m.addEventListener("keydown", e => {
+  if((e.key===" "||e.key==="Enter") && !e.repeat){ e.preventDefault(); startRec(); }
+});
+m.addEventListener("keyup", e => {
+  if(e.key===" "||e.key==="Enter"){ e.preventDefault(); stopRec(); }
+});
+
+ticks(); health();
+</script>
+</body>
+</html>

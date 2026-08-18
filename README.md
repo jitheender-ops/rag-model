@@ -121,12 +121,26 @@ beside it.
 
 ```bash
 make serve            # http://localhost:8000  (make serve PORT=9000 to move it)
+docker build -t mic-rag . && docker run -p 7860:7860 mic-rag    # the deployed shape
 ```
 
 Open the page, hold the button, speak. The page and the API are served from **one origin**,
-so the endpoint wires itself — there is nothing to paste into the config box, and no CORS
-to get wrong. Opened as a `file://` instead, the page falls back to its own demo mode with
-synthetic timings, clearly badged, so a dead backend never kills a live demo.
+so the endpoint wires itself — there is nothing to paste into a config box, and no CORS to
+get wrong.
+
+The page is `web/index.html`: one hand-written file, no build step, no framework. It replaced
+an 836 KB generated bundle that was a single 758,000-character line titled *Bundled Page* —
+unreadable, unreviewable, and unchangeable without the tool that produced it.
+
+Its whole layout is one argument. The hero is a **200 ms ruler drawn to scale**, and every
+stage the request spends time in is a segment inside it. The two vendor legs are drawn
+outside its walls *at the same scale*, which means they do not fit on the screen and are
+clipped by the frame — speech-to-text is 2.6× the entire budget. That is the same point
+D2 makes in prose, made in a way you cannot skim past. Teal is what we own and measured;
+ochre is somebody else's clock; oxblood is an abstention, which is styled as a result rather
+than an error because that is what it is.
+
+To deploy it, see [DEPLOY.md](DEPLOY.md).
 
 ```
 GET  /             the page
