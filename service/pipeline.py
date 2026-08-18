@@ -70,6 +70,27 @@ COVERAGE_FLOOR = _calibrated("coverage_floor", 0.70)
 CS_RELAXATION = 0.10        # ...relaxed for code-switched queries, see covers()
 COVERAGE_FLOOR_CS = max(0.0, COVERAGE_FLOOR - CS_RELAXATION)
 CANARY = "PWNED"
+# gate 4's verifier. lexical = term overlap + coverage, free and shallow. nli = a
+# multilingual entailment model asked whether the cited passage entails the answer, which is
+# the check the lexical one only approximates. Default follows the measurement, not the
+# preference: see reports/verify.md and `make verify-tune`.
+# lexical, and the default is the measurement rather than the expectation. The README called
+# an NLI verifier "the single change that would move this table most"; `make verify-tune` was
+# built to prove it and disproved it instead -- swept on the same held-out rows, entailment
+# rejects 12.2% of wrong citations to coverage's 22.7%, and costs 8.0% false abstention to
+# its 3.5%. It loses in both directions at once, so it does not ship as the default. It stays
+# behind VERIFY=nli because the finding is worth being able to re-run, and because the reason
+# it loses is fixable (see entails_by: the hypothesis is a question glued to an answer).
+VERIFY = os.getenv("VERIFY", "lexical")
+NLI_MODEL = os.getenv("NLI_MODEL",
+                      "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7")
+NLI_MAX_LEN = int(os.getenv("NLI_MAX_LEN", "384"))
+# Measured: 32 ms P50 for one pair, and a P100 near 900 ms on a cold or contended box. So it
+# gets the same treatment as the cross-encoder -- a bounded wait with a real fallback, not a
+# hope. The fallback is the lexical verdict, which is a verifier rather than nothing, so a
+# slow entailment model costs depth of checking and never the deadline.
+NLI_BUDGET_MS = float(os.getenv("NLI_BUDGET_MS", "45"))
+NLI_FLOOR = _calibrated("nli_floor", 1.0, env="NLI_FLOOR")
 
 # Measured on 300 held-out queries with human qrels (chunk level, top-1 / top-4 / MRR@10):
 #   dense only              30.7% / 69.7% / 0.475   recall@50 88.0%
@@ -129,6 +150,9 @@ RERANK_RESERVE_MS = 50.0
 # turns it on for anyone willing to raise the budget; see service/llm.py for the numbers.
 GENERATOR = os.getenv("GENERATOR", "extractive")
 LLM_CTX = int(os.getenv("LLM_CTX", "3"))        # passages handed to the model
+# The generator gets one tool: search again. It is on wherever the LLM is on, and off is
+# kept so the hop can be measured against not having it rather than assumed to help.
+LLM_TOOLS = os.getenv("LLM_TOOLS", "on") != "off"
 
 # gate 1. Harm verbs are matched near their object rather than as bare words, so
 # "kill" in "killed by rainfall" does not trip the gate.
@@ -265,18 +289,31 @@ def embed_query(ctx: Ctx, degraded=False):
     return vec
 
 
-@stage("retrieve", budget_ms=25)
-def retrieve(ctx: Ctx, qvec, degraded=False):
-    """dense + bm25 + RRF."""
-    k = 25 if degraded else 50
-    dense = [] if ctx.lexical_only else ctx.index.search(qvec, k=k)
-    lex = ctx.index.bm25(ctx.query, k=k)
+def fuse(index: Index, query: str, qvec, k: int) -> tuple[list[tuple[str, float]], float]:
+    """dense + bm25 -> RRF. Returns (fused hits, top dense score).
+
+    Shared by retrieve() and by the search_corpus tool, because a tool hop that ranked its
+    passages differently from the request would append results that are not comparable to
+    the context they are appended to -- the model would be reading two rankings as one list.
+    qvec None means the encoder was not available: BM25 carries it, exactly as it does for a
+    request whose encoder missed its deadline.
+    """
+    dense = [] if qvec is None else index.search(qvec, k=k)
+    lex = index.bm25(query, k=k)
     rr: dict[str, float] = {}
     for weight, ranking in ((1.0, dense), (BM25_WEIGHT, lex)):
         for i, (cid, _) in enumerate(ranking):
             rr[cid] = rr.get(cid, 0.0) + weight / (60 + i + 1)
     fused = sorted(rr.items(), key=lambda kv: (-kv[1], kv[0]))[:k]
-    best_dense = dense[0][1] if dense else 0.0
+    return fused, (dense[0][1] if dense else 0.0)
+
+
+@stage("retrieve", budget_ms=25)
+def retrieve(ctx: Ctx, qvec, degraded=False):
+    """dense + bm25 + RRF."""
+    k = 25 if degraded else 50
+    fused, best_dense = fuse(ctx.index, ctx.query,
+                             None if ctx.lexical_only else qvec, k)
     if ctx.lexical_only:
         # gate 2 thresholds a dense cosine, and there is no vector to threshold. Inventing a
         # BM25 equivalent would be a second, uncalibrated floor on an unbounded score; the
@@ -494,6 +531,46 @@ def generate(ctx: Ctx, texts: dict, degraded=False):
     return ctx.cited
 
 
+def search_corpus(ctx: Ctx, texts: dict, cited: list[str]):
+    """The one tool the generator gets: retrieve again, with a query of its own choosing.
+
+    It exists for the case the rest of the path cannot fix -- retrieval put the answer
+    outside the top LLM_CTX passages, gate 2 let the request through because something
+    scored well, and the model can see that what it was handed does not answer the question.
+    A second retrieval with the model's rephrasing is the cheapest thing that can rescue it.
+
+    Bounded like everything else here: the encode runs under whatever the budget has left
+    and falls back to lexical retrieval rather than to waiting, and chunks already in the
+    context are skipped so the hop cannot spend itself returning what the model already read.
+    Every hit is appended to `cited` in the order the model sees it, which is what keeps a
+    citation into a tool result resolvable to a real chunk id.
+    """
+    def search(query: str, lang: str | None = None, k: int = 3) -> list[str]:
+        k = max(1, min(int(k), 10))
+        left = ctx.budget.remaining() if ctx.budget else TOTAL_MS
+        qvec = embed_by(query, max(5.0, left - GENERATE_RESERVE_MS))
+        # ponytail: the language filter is applied after retrieval, so a lang-restricted
+        # search reaches deeper to have something left to filter -- measured: at depth 50 a
+        # `lang="bn"` search on an English query returned 0 passages, because all 50 fused
+        # hits were English. Ceiling: on a corpus where one language is rare, even 200 can
+        # come back empty. Upgrade path is a per-language index shard behind fuse().
+        fused, _ = fuse(ctx.index, query, qvec, 200 if lang else 50)
+        out = []
+        for cid, _ in fused:
+            if cid in cited:
+                continue
+            if lang and str(ctx.index.get(cid).get("pid", "")).split(":")[0] != lang:
+                continue
+            cited.append(cid)
+            out.append(display(texts.get(cid, "")))
+            if len(out) >= k:
+                break
+        ctx.trace.event("tool_search_corpus", tool_query=query[:60], lang=lang or "any",
+                        returned=len(out), lexical=qvec is None)
+        return out
+    return search
+
+
 def upgrade_with_llm(ctx: Ctx, texts: dict, cap: int) -> None:
     """Replace the extracted sentence with a generated one, if the budget allows.
 
@@ -509,8 +586,13 @@ def upgrade_with_llm(ctx: Ctx, texts: dict, cap: int) -> None:
     from service import llm
     left = ctx.budget.remaining() if ctx.budget else TOTAL_MS
     deadline = max(5.0, left - GENERATE_RESERVE_MS)
-    passages = [display(texts.get(cid, "")) for cid, _, _ in ctx.hits[:LLM_CTX]]
-    out = llm.answer_within(ctx.query, passages, deadline)
+    # cited[] grows as the tool appends: the model numbers its passages [1..n] across the
+    # context AND anything it searched up, so the citation it returns has to index the same
+    # combined list or gate 4 would verify the answer against the wrong chunk.
+    cited = [cid for cid, _, _ in ctx.hits[:LLM_CTX]]
+    passages = [display(texts.get(cid, "")) for cid in cited]
+    search = search_corpus(ctx, texts, cited) if LLM_TOOLS else None
+    out = llm.answer_within(ctx.query, passages, deadline, search=search)
     if out is None:
         ctx.trace.event("llm_deadline", waited_ms=round(deadline, 1))
         if ctx.budget is not None:
@@ -525,9 +607,11 @@ def upgrade_with_llm(ctx: Ctx, texts: dict, cap: int) -> None:
         return
     ctx.answer = " ".join(out["answer"].split()[:cap])
     ctx.generator = f"llm:{out.get('model', '?')}"
+    if out.get("hops"):
+        ctx.generator += f"+tool x{out['hops']}"
     n = out.get("passage")
-    if isinstance(n, int) and 1 <= n <= len(ctx.hits):      # cite what the model says it used
-        ctx.cited = ctx.hits[n - 1][0]
+    if isinstance(n, int) and 1 <= n <= len(cited):         # cite what the model says it used
+        ctx.cited = cited[n - 1]
 
 
 def covers(terms: set[str], text: str) -> float:
@@ -555,6 +639,45 @@ def covers(terms: set[str], text: str) -> float:
     return max(frac(g) for g in groups.values())
 
 
+_nli_model = None
+
+
+def nli_model():
+    """Loaded once, lazily, like the embedder and the reranker."""
+    global _nli_model
+    if _nli_model is None:
+        from sentence_transformers import CrossEncoder
+        _nli_model = CrossEncoder(NLI_MODEL, max_length=NLI_MAX_LEN)
+    return _nli_model
+
+
+def entails_by(premise: str, hypothesis: str, deadline_ms: float):
+    """Entailment logit for premise -> hypothesis, or None if it cannot make the deadline.
+
+    The fourth bounded model call in this file. The hypothesis is the question and the answer
+    read as one statement, not the answer alone: "fatty acids" is entailed by half the corpus,
+    and what gate 4 needs to know is whether this passage supports THIS answer TO THIS
+    QUESTION. That is also the gap the lexical verifier cannot close -- it can see that the
+    words overlap, never that the passage addresses what was asked.
+
+    ponytail: gluing query and answer into a hypothesis is a crude substitute for converting
+    a question into a declarative statement. Ceiling: awkward hypotheses on wh-questions with
+    long answers. Upgrade path is a question-to-statement rewrite before the pair is scored.
+    """
+    from concurrent.futures import TimeoutError as FutureTimeout
+
+    def work():
+        with _rerank_lane:                    # shares the reranker's lane budget: both are
+            import numpy as np                # cross-encoders and the machine has ten cores
+            out = nli_model().predict([(premise, hypothesis)], show_progress_bar=False)
+            row = np.asarray(out)[0]
+            return float(row[0])              # id2label: 0 = entailment
+    try:
+        return _rerank_pool().submit(work).result(timeout=deadline_ms / 1000)
+    except (FutureTimeout, Exception):
+        return None
+
+
 @stage("verify", budget_ms=20)
 def verify(ctx: Ctx, cited_text: str, degraded=False):
     """gate 4: the answer must be supported by the chunk it cites, and the chunk must
@@ -566,7 +689,30 @@ def verify(ctx: Ctx, cited_text: str, degraded=False):
     support = len(a & content(cited_text)) / (len(a) or 1)
     coverage = covers(q, cited_text)
     floor = COVERAGE_FLOOR_CS if len({script_of(t) for t in q}) > 1 else COVERAGE_FLOOR
-    if support < SUPPORT_FLOOR or coverage < floor:
+    lexical_fails = support < SUPPORT_FLOOR or coverage < floor
+
+    if VERIFY == "nli" and not degraded and ctx.answer:
+        left = ctx.budget.remaining() if ctx.budget else TOTAL_MS
+        score = entails_by(cited_text, f"{ctx.query} {ctx.answer}",
+                           min(NLI_BUDGET_MS, max(5.0, left)))
+        if score is None:
+            # the entailment model missed its deadline. Fall back to the lexical verdict --
+            # a shallower verifier, not no verifier, which is the difference between
+            # degrading and turning gate 4 off.
+            ctx.trace.event("nli_deadline", waited_ms=round(min(NLI_BUDGET_MS, left), 1))
+            if ctx.budget is not None:
+                ctx.budget.degradations.append("verify")
+        else:
+            ctx.trace.event("nli_score", score=round(score, 3), floor=NLI_FLOOR)
+            # support is still enforced: an extractive answer that is not in its own cited
+            # chunk is a bug in generate(), and entailment would happily forgive it.
+            if score < NLI_FLOOR or support < SUPPORT_FLOOR:
+                ctx.abstain, ctx.gate = True, "gate4_nli"
+                ctx.reason = f"entailment={score:.2f} < {NLI_FLOOR:.2f} (support={support:.2f})"
+                ctx.answer = ""
+            return support
+
+    if lexical_fails:
         ctx.abstain, ctx.gate = True, "gate4_nli"
         ctx.reason = f"support={support:.2f} coverage={coverage:.2f} floor={floor:.2f}"
         ctx.answer = ""
@@ -731,6 +877,29 @@ def demo():
     # ...and a bracket that is genuinely part of the passage must survive untouched
     assert display("[citation needed] the bridge") == "[citation needed] the bridge"
     assert display("[see fig. 2] rainfall") == "[see fig. 2] rainfall"
+
+    # fuse() is what retrieve() and the search_corpus tool share; if they drift, a tool
+    # result is ranked by one system and read as if it came from the other
+    hits, best = fuse(ix, "bridge of Vasco", None, 5)
+    assert hits and hits[0][0] == "c1", hits
+    assert best == 0.0, "no qvec means no dense score to threshold, not a fake one"
+
+    # the tool: it skips what the model already has, honours lang, and grows `cited` in the
+    # order the model sees -- that ordering is what makes a citation resolvable
+    seen = ["c1"]
+    tool = search_corpus(Ctx("q", ix, Trace("t"), None), texts, seen)
+    got = tool("rainfall repair cycle", None, 2)
+    assert "c1" not in [c for c in seen[1:]], "a chunk already in context must not be re-sent"
+    assert seen[0] == "c1" and len(seen) > 1 and got, (seen, got)
+    assert all(isinstance(g, str) for g in got)
+    # both directions, because a filter that matches NOTHING also passes the negative half:
+    # this is exactly how a lang filter reading the wrong metadata key shipped once already
+    lang_of = lambda c: str(ix.get(c).get("pid", "")).split(":")[0]
+    seen2 = []
+    tool2 = search_corpus(Ctx("q", ix, Trace("t"), None), texts, seen2)
+    hit = tool2("rainfall repair cycle", "c2", 3)
+    assert hit and all(lang_of(c) == "c2" for c in seen2), (hit, seen2)
+    assert tool2("anything at all", "zz", 3) == [], "an unmatched language returns nothing"
 
     b = Budget(30.0)
     ctx = Ctx("q", ix, Trace("x"), b)

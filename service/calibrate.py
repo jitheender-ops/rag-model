@@ -52,8 +52,8 @@ def sweep(pos: list[float], neg: list[float],
 GROUNDING_N = int(os.getenv("GROUNDING_N", "300"))
 
 
-def grounding_samples(ix, texts, parents, queries) -> list[tuple[float, bool]]:
-    """(coverage, the citation was a gold passage) for each query that reaches gate 4.
+def grounding_samples(ix, texts, parents, queries) -> list[tuple[float, float, bool]]:
+    """(coverage, entailment, the citation was a gold passage) for each query reaching gate 4.
 
     Gate 4's floors are swept on real queries with human qrels, which gives the one label
     that matters: did the passage we are about to answer from actually answer this question?
@@ -62,8 +62,12 @@ def grounding_samples(ix, texts, parents, queries) -> list[tuple[float, bool]]:
     on the traffic gate 4 really sees, not on traffic gate 2 would have refused.
     """
     import service.pipeline as P
-    saved = (P.COVERAGE_FLOOR, P.COVERAGE_FLOOR_CS, P.SUPPORT_FLOOR)
+    saved = (P.COVERAGE_FLOOR, P.COVERAGE_FLOOR_CS, P.SUPPORT_FLOOR, P.NLI_FLOOR)
     P.COVERAGE_FLOOR = P.COVERAGE_FLOOR_CS = P.SUPPORT_FLOOR = 0.0
+    # ...and the entailment floor too. It is the floor being FITTED here: left at its
+    # previous value it abstains, blanks ctx.answer, and every row it refused arrives with
+    # nothing to score -- a sweep fitted on the rows the old floor already approved.
+    P.NLI_FLOOR = float("-inf")
     out = []
     try:
         for q in queries:
@@ -72,10 +76,17 @@ def grounding_samples(ix, texts, parents, queries) -> list[tuple[float, bool]]:
             if not cited:                     # gate 1 or gate 2 got there first
                 continue
             pid = ix.get(cited)["pid"]
-            out.append((P.covers(P.content(q["query"]), parents.get(pid) or texts.get(cited, "")),
-                        pid in set(q["qrels"])))
+            passage = parents.get(pid) or texts.get(cited, "")
+            # the entailment score is collected on the same traffic and the same citations as
+            # the coverage score, so the two floors are fitted on one set and are comparable.
+            # No deadline here: this is calibration, not serving, and a floor fitted on
+            # whichever pairs happened to beat a 45 ms wait would be fitted on the machine.
+            nli = P.entails_by(P.display(passage), f"{q['query']} {t.meta.get('answer', '')}",
+                               1e9) if P.VERIFY == "nli" and t.meta.get("answer") else None
+            out.append((P.covers(P.content(q["query"]), passage),
+                        nli, pid in set(q["qrels"])))
     finally:
-        P.COVERAGE_FLOOR, P.COVERAGE_FLOOR_CS, P.SUPPORT_FLOOR = saved
+        P.COVERAGE_FLOOR, P.COVERAGE_FLOOR_CS, P.SUPPORT_FLOOR, P.NLI_FLOOR = saved
     return out
 
 
@@ -127,14 +138,25 @@ def main():
     import service.pipeline as P
     P.SCORE_FLOOR = floor
     samples = grounding_samples(ix, _texts, _parents, grounding_queries())
-    gold = [c for c, is_gold in samples if is_gold]
-    wrong = [c for c, is_gold in samples if not is_gold]
+    gold = [c for c, _n, is_gold in samples if is_gold]
+    wrong = [c for c, _n, is_gold in samples if not is_gold]
     if gold and wrong:
         cov_floor, cov_tnr = sweep(gold, wrong)
         cal.update({"coverage_floor": cov_floor,
                     "coverage_rejects_wrong_citation": round(cov_tnr, 4),
                     "coverage_false_abstention": round(sum(c < cov_floor for c in gold) / len(gold), 4),
                     "coverage_n_gold": len(gold), "coverage_n_wrong": len(wrong)})
+    # gate 4's entailment floor, swept on the same rows and against the same label, so the
+    # two verifiers can be compared on one set rather than on two convenient ones.
+    n_gold = [n for _c, n, is_gold in samples if is_gold and n is not None]
+    n_wrong = [n for _c, n, is_gold in samples if not is_gold and n is not None]
+    if n_gold and n_wrong:
+        nli_floor, nli_tnr = sweep(n_gold, n_wrong)
+        cal.update({"nli_floor": nli_floor,
+                    "nli_rejects_wrong_citation": round(nli_tnr, 4),
+                    "nli_false_abstention": round(sum(n < nli_floor for n in n_gold) / len(n_gold), 4),
+                    "nli_n_gold": len(n_gold), "nli_n_wrong": len(n_wrong),
+                    "nli_model": P.NLI_MODEL})
     with open(OUT, "w") as fh:
         json.dump(cal, fh, indent=2)
     print(json.dumps(cal, indent=2), f"-> {OUT}")
