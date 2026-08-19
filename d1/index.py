@@ -163,6 +163,33 @@ def build_hnsw(mat):
     return ix
 
 
+def load_or_build_hnsw(mat, path: str | None):
+    """Read the graph from disk, or build it and leave it there for next time.
+
+    A stale graph is worse than no graph -- it would return neighbours for vectors that are
+    no longer in the index -- so the row count is checked before it is trusted, and a
+    mismatch rebuilds rather than serving a graph that describes a different corpus.
+    """
+    import faiss
+    if path and os.path.exists(path):
+        try:
+            ix = faiss.read_index(path)
+            if ix.ntotal == len(mat):
+                ix.hnsw.efSearch = EF_SEARCH
+                return ix
+            print(f"  hnsw: {path} has {ix.ntotal} vectors, index has {len(mat)} -- rebuilding")
+        except Exception as e:
+            print(f"  hnsw: could not read {path} ({e!r}) -- rebuilding")
+    ix = build_hnsw(mat)
+    if path:
+        try:
+            faiss.write_index(ix, path)
+            print(f"  hnsw: wrote {path}")
+        except Exception as e:
+            print(f"  hnsw: could not write {path} ({e!r})")
+    return ix
+
+
 class Index:
     """Exact search + BM25 over the same corpus. One instance per strategy.
 
@@ -206,13 +233,20 @@ class Index:
         for (cid, text, payload), v in zip(rows, vecs):
             self.add(cid, text, payload, vec=v)
 
-    def freeze(self):
+    def freeze(self, ann_path: str | None = None):
+        """ann_path: where the HNSW graph lives on disk.
+
+        Building the graph is a minutes-long job at 300k vectors, and a server that builds
+        it at startup pays that on every cold start -- which for a scale-to-zero box is a
+        cost the first visitor wears, repeatedly. It is written once next to the vectors it
+        indexes and read back in seconds after that.
+        """
         self._avglen = (sum(self._len) / len(self._len)) if self._len else 0.0
         if self.vecs and not isinstance(self.vecs[0], dict):
             import numpy as np
             self._mat = np.vstack(self.vecs).astype("float32")
             if ANN == "hnsw":
-                self._ann = build_hnsw(self._mat)
+                self._ann = load_or_build_hnsw(self._mat, ann_path)
         return self
 
     def search(self, qvec, k: int = 50) -> list[tuple[str, float]]:

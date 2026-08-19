@@ -1,8 +1,12 @@
-# The serving path only. Not the bench: d1/ann.py wants faiss and d4/verify_tune.py wants
-# the NLI model, and neither runs in the container -- they produce reports, and the reports
-# are committed. Installing them here would add ~1.5 GB to an image for code the box never
-# executes.
+# The serving path only. d4/verify_tune.py's NLI model stays out -- it produces a report,
+# and the report is committed.
+#
+# faiss IS here, and was not until the corpus grew: at 300k vectors exact search ran
+# 76-114 ms on the deploy box and ate the budget the answer needed. The graph is prebuilt
+# and shipped beside the vectors, so the container reads it rather than building it, but it
+# still needs the library to read it with.
 #
 # torch is pinned to the CPU wheel index in the Dockerfile: the default wheel carries CUDA
 # and is ~2.5 GB of driver nobody on a CPU box will ever call.
 sentence-transformers==5.7.0
+faiss-cpu==1.15.0

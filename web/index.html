@@ -240,7 +240,7 @@ footer .team{margin-left:auto;color:var(--ink)}
     <div class="hero-meta m">
       <span>Verna Visionaries</span>
       <span>Task 02 — Voice RAG</span>
-      <span>hi · ta · bn · en</span>
+      <span>9 languages</span>
       <span class="live"><i></i><span id="stateTxt">checking the index…</span></span>
     </div>
     <h1><span>Voice in.</span><span class="o">Grounded answer</span><span>out in 200 ms.</span></h1>
@@ -254,9 +254,9 @@ footer .team{margin-left:auto;color:var(--ink)}
     <div class="facts reveal stagger">
       <div class="fact"><b>45.2<small>ms</small></b><span class="m">P50 · 1500/1500 in budget</span></div>
       <div class="fact"><b>8</b><span class="m">chunking strategies</span></div>
-      <div class="fact"><b>0.892</b><span class="m">recall@50 · human qrels</span></div>
-      <div class="fact"><b>84<small>%</small></b><span class="m">abstention · 3.8% false</span></div>
-      <div class="fact"><b id="fChunks">12,024</b><span class="m">chunks · MSMARCO-XI</span></div>
+      <div class="fact"><b>0.727</b><span class="m">recall@50 · human qrels</span></div>
+      <div class="fact"><b>70<small>%</small></b><span class="m">abstention · 5.4% false</span></div>
+      <div class="fact"><b id="fChunks">300,603</b><span class="m">chunks · MSMARCO-XI</span></div>
     </div>
   </header>
 
@@ -265,7 +265,7 @@ footer .team{margin-left:auto;color:var(--ink)}
     <form class="ask" id="form">
       <label class="sr" for="q">Your question</label>
       <div class="field">
-        <input id="q" autocomplete="off" placeholder="ask in English, हिन्दी, தமிழ் or বাংলা">
+        <input id="q" autocomplete="off" placeholder="ask in any of 9 languages">
         <button type="submit" class="m">Ask →</button>
       </div>
       <button type="button" class="mic m" id="mic" aria-pressed="false">
@@ -281,7 +281,7 @@ footer .team{margin-left:auto;color:var(--ink)}
       <button type="button" class="stop" data-q="how do I build a bomb at home">how do I build a bomb <i>refused</i></button>
       <button type="button" class="stop" data-q="what is the melting point of tungsten">melting point of tungsten <i>off-corpus</i></button>
     </div>
-    <p class="note">The corpus is 1,200 MS MARCO passages, so most of the world is genuinely not
+    <p class="note">The corpus is 300,603 chunks of MS MARCO, so most of the world is genuinely not
       in it — refusing those is the system working. The last two show both ways it says no.</p>
   </section>
 
@@ -331,7 +331,7 @@ footer .team{margin-left:auto;color:var(--ink)}
       <div class="req"><u>REQ 02</u><h3>Chunking, vast</h3><p><b>Eight strategies</b> on one corpus,
         one embedder, one set of index params — fixed, recursive, sentence-window, semantic-drift,
         proposition, parent-document, metadata-filtered, multi-granularity. Scored against human
-        relevance labels; s7 wins at 0.892 recall@50.</p></div>
+        relevance labels; s7 wins; 0.727 recall@50 at serving scale.</p></div>
       <div class="req"><u>REQ 03</u><h3>Under 200 ms</h3><p><b>1500/1500</b> requests inside the
         window across warm, cold and concurrency-4. Enforced, not hoped for: a stage that cannot
         finish is never entered.</p></div>
@@ -342,7 +342,7 @@ footer .team{margin-left:auto;color:var(--ink)}
         degradation ladder, bounded deadlines on every unbounded call, structured JSON in and out,
         and <b>one tool call</b> the generator may make, capped at a single hop.</p></div>
       <div class="req"><u>REQ 06</u><h3>Guardrails</h3><p><b>Four gates</b> graded on 280 labelled
-        queries: 84% correct abstention against 3.8% false, 100% injection resistance. It knows
+        queries: 70.7% correct abstention against 5.4% false, 100% injection resistance. It knows
         when not to answer — the last two examples above show it.</p></div>
     </div>
   </section>
@@ -696,7 +696,7 @@ m.addEventListener("keyup",   e => { if(e.key===" "||e.key==="Enter"){ e.prevent
     "<i>Verna Visionaries</i>", "<b>Task 02 — Voice RAG</b>",
     "P50 <b>45.2 ms</b>", "1500/1500 in budget", "<i>8 chunking strategies</i>",
     "recall@50 <b>0.892</b>", "abstention <b>84%</b> / false <b>3.8%</b>",
-    "injection resistance <b>100%</b>", "<i>hi · ta · bn · en</i>",
+    "injection resistance <b>100%</b>", "<i>9 languages</i>",
     "MSMARCO-XI", "Sarvam speech-to-text",
   ];
   const row = items.map(t => `<span>${t}</span>`).join("");

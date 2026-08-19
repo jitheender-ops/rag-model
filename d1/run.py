@@ -152,6 +152,15 @@ def main():
     ap.add_argument("--queries", type=int, default=2000)
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--warm", type=int, default=500)
+    # D1 compares eight strategies; a SERVING index needs exactly one. At 1,200 docs the
+    # difference was 17 minutes against 2; at 300k passages it is the difference between a
+    # build that finishes tonight and one that produces gigabytes nobody queries -- s8 alone
+    # was 115 MB at 12k chunks. The comparison table is a claim about strategies at fixed
+    # conditions, so it stays valid at the size it was measured; this flag is for building
+    # the winner at the size actually served.
+    ap.add_argument("--only", default=None,
+                    help="build only these strategy keys, comma separated (e.g. s7). "
+                         "Skips the comparison table -- reports/chunking.md is left alone.")
     ap.add_argument("--report-only", action="store_true",
                     help="re-render reports/chunking.md from reports/chunking.json, no embedding")
     args = ap.parse_args()
@@ -180,8 +189,17 @@ def main():
         queries = [json.loads(l) for l in fh]
     print(f"corpus {sha} docs={n_docs} passages={sum(len(d.passages) for d in docs)} queries={n_q}")
 
+    picked = ALL
+    if args.only:
+        want = {k.strip() for k in args.only.split(",") if k.strip()}
+        picked = [c for c in ALL if c().key.split()[0] in want]
+        if not picked:
+            raise SystemExit(f"--only {args.only!r} matched nothing; keys are "
+                             + ", ".join(c().key.split()[0] for c in ALL))
+        print(f"building only: {', '.join(c().key for c in picked)}")
+
     rows = []
-    for cls in ALL:
+    for cls in picked:
         s = cls()
         built = build(s, docs)
         m = evaluate(built, queries, args.repeats, args.warm)
@@ -197,6 +215,13 @@ def main():
     # recall@50 first, nDCG@10 breaks ties, then the smaller index wins.
     # Sampled rows are ineligible: they were scored on their own slice's queries, so their
     # numbers are reportable but not comparable.
+    if args.only:
+        # A one-horse race has no winner and reports/chunking.{md,json} keep describing the
+        # eight-way comparison that produced the number in the README. Overwriting them from
+        # a subset would replace a measurement with a subset of itself.
+        print(f"\nbuilt {len(rows)} strategy index(es) at this corpus size; "
+              f"comparison report left untouched")
+        return
     winner = max([r for r in rows if not r["sampled"]],
                  key=lambda r: (r["recall@50"], r["nDCG@10"], -r["size_mb"]))
     twins = parallel_twins(raw)

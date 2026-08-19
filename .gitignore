@@ -16,3 +16,11 @@ data/shards/
 # the clips are yours and are not committed; the note saying what to record is
 data/audio/*
 !data/audio/README.md
+
+# The corpus is now a build artifact, not source. At 1,200 docs it was 17 MB and committing
+# it made the repo reproducible in one clone; at 30,000 it is 515 MB, past what GitHub will
+# take in a single file. `make corpus` regenerates it, every report stamps the corpus sha it
+# was measured against, and the frozen query sets that bind to that sha are still committed
+# -- so what is checked in is still enough to detect a mismatch, just not to avoid a rebuild.
+data/corpus.jsonl
+data/msmarco_queries.jsonl

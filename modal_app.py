@@ -32,6 +32,8 @@ image = (
     # container with no GPU will never call
     .pip_install("torch==2.13.0", index_url="https://download.pytorch.org/whl/cpu")
     .pip_install("sentence-transformers==5.7.0")
+    # needed to READ the prebuilt graph, not to build one -- see requirements.txt
+    .pip_install("faiss-cpu==1.15.0")
     # weights into the image, not into the first request. service/server.py loads the index
     # and warms the encoder before it opens the socket, which is the whole reason its first
     # answer is already inside the budget; downloading at runtime would undo that.
@@ -67,9 +69,17 @@ image = (
           # to :0:0, the passage that states the fact. Turning it off reproduced that exact
           # regression on the live box, which is the most direct evidence in this repo that
           # the 26 ms it costs on the bench is real.
-          "RERANK": "cross", "RERANK_TOP": "2"})
+          "RERANK": "cross", "RERANK_TOP": "2",
+          # 300k vectors is where exact search stops being free: measured on this box it ran
+          # 76-114 ms and ate the budget the answer needed, so rerank was skipped and valid
+          # questions were refused. reports/ann.md predicted exactly this crossover. The
+          # graph is built once and shipped -- rebuilding it costs 4 minutes, and a
+          # scale-to-zero box would pay that on every cold start.
+          "INDEX": "hnsw"})
     # only the winning strategy: the other seven indexes are 420 MB of evidence for
     # reports/chunking.md, and this box serves the one reports/chunking.json names
+    # includes index.faiss: the prebuilt HNSW graph, so the container reads it rather than
+    # spending four minutes of every cold start rebuilding what never changed
     .add_local_dir("artifacts/d1/s7", f"{APP_DIR}/artifacts/d1/s7")
     # reports/ is configuration here, not documentation -- winner_dir() reads the winning
     # strategy out of reports/chunking.json, and without it the server falls back to an
@@ -83,7 +93,9 @@ image = (
     .add_local_dir("service", f"{APP_DIR}/service")
     .add_local_dir("stt", f"{APP_DIR}/stt")
     .add_local_dir("tts", f"{APP_DIR}/tts")
-    .add_local_file("data/corpus.jsonl", f"{APP_DIR}/data/corpus.jsonl")
+    # data/corpus.jsonl is deliberately NOT here: it is 515 MB and nothing in the serving
+    # path reads it. The passages the server answers from live in the index's own
+    # chunks.jsonl; the corpus file is what the benches and the dataset builders replay.
     .add_local_file("data/score_floor.json", f"{APP_DIR}/data/score_floor.json")
     .add_local_file("data/frozen.json", f"{APP_DIR}/data/frozen.json")
 )
@@ -109,7 +121,7 @@ SECRETS = [modal.Secret.from_name("sarvam", required_keys=["SARVAM_API_KEY"])]
     # Every stage budget in service/pipeline.py was calibrated on ~10 cores, so the host has
     # to bring roughly that many or the ladder degrades correct answers away.
     cpu=8,
-    memory=4096,              # two transformers + the index. 2 GB swaps under concurrency,
+    memory=8192,              # two transformers + a 500 MB index. 4 GB was fine at 12k chunks,
                               # which turns a latency demo into a latency counter-example
     secrets=SECRETS,
     min_containers=0,         # scale to zero: billed only while someone is actually using it

@@ -859,7 +859,9 @@ def load_index(strategy_dir: str) -> tuple[Index, dict, dict]:
         # warm-up on two short strings warms a tensor shape no request will ever use.
         cross_encoder().predict([("ready", r["text"]) for r in rows[:RERANK_TOP]],
                                 show_progress_bar=False)
-    return ix.freeze(), texts, parents
+    # the graph lives beside the vectors it indexes, so a container reads it instead of
+    # spending minutes of every cold start rebuilding what never changed
+    return ix.freeze(ann_path=f"{strategy_dir}/index.faiss"), texts, parents
 
 
 def demo():
