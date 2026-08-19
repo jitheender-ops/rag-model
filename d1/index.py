@@ -46,6 +46,18 @@ EF_SEARCH = int(os.getenv("HNSW_EF_SEARCH", "128"))
 # things. INDEX=hnsw opts in, and `make ann` is what justifies opting in.
 ANN = os.getenv("INDEX", "exact")
 K1, B = 1.2, 0.75   # bm25
+# Skip query terms appearing in more than this fraction of chunks. OFF by default, and the
+# default is the measurement rather than the temptation: at 300k chunks BM25 is 99% of
+# retrieval (13.8 ms against dense search's 0.12 ms behind an HNSW graph), and a 0.05 ceiling
+# makes it 1.8 ms -- 7.5x -- but changes 27% of its own top-10. Fusion dilutes that at weight
+# 0.1, so the end-to-end cost is probably small; "probably" is not a number, and nothing in
+# this repo ships a quality change on one. Measure it with `make tune` before turning it on.
+#
+# The ceiling is on document frequency rather than a stopword list, so it adapts to the
+# corpus instead of asserting which words are dull -- and note this corpus is nine languages,
+# so English stopwords sit near 11% document frequency, which is why anything above 0.10 is
+# a no-op here.
+DF_SKIP = float(os.getenv("BM25_DF_SKIP", "0"))
 
 HASH_DIM = 4096     # hashed-backend vector dimensionality
 MODEL_NAME = os.getenv("EMBED_MODEL", "intfloat/multilingual-e5-small")
@@ -273,11 +285,26 @@ class Index:
         return [(self.ids[i], s) for i, s in top_sparse]
 
     def bm25(self, query: str, k: int = 50) -> list[tuple[str, float]]:
+        """BM25 over the inverted index, skipping terms that appear nearly everywhere.
+
+        At 12k chunks this loop cost nothing. At 300k it became 99% of retrieval -- dense
+        search is 0.12 ms behind an HNSW graph and this was 18 ms -- because a term like
+        "is" or "the" has a posting list the length of the corpus and gets walked in full.
+        Those are exactly the terms BM25 already decides not to care about: IDF at 50%
+        document frequency is 0.4 and falling, so the cost is spent to move nothing.
+
+        DF_SKIP is a ceiling on document frequency, not a stopword list: it adapts to the
+        corpus instead of asserting which words are dull, and it is off by default at small
+        n, where walking everything is cheaper than deciding not to.
+        """
         n = len(self.ids)
+        cap = int(n * DF_SKIP)
         scores: dict[int, float] = defaultdict(float)
         for t in set(tokenize(query)):
             post = self._tok.get(t)
             if not post:
+                continue
+            if cap and len(post) > cap:      # near-universal term: high cost, no signal
                 continue
             idf = math.log(1 + (n - len(post) + 0.5) / (len(post) + 0.5))
             for i, tf in post:
