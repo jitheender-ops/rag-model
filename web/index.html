@@ -252,10 +252,10 @@ footer .team{margin-left:auto;color:var(--ink)}
       <div class="scroll-cue m"><s></s><span>scroll to ask</span></div>
     </div>
     <div class="facts reveal stagger">
-      <div class="fact"><b>45.2<small>ms</small></b><span class="m">P50 · 1500/1500 in budget</span></div>
+      <div class="fact"><b>55.8<small>ms</small></b><span class="m">P50 · 1500/1500 in budget</span></div>
       <div class="fact"><b>8</b><span class="m">chunking strategies</span></div>
       <div class="fact"><b>0.727</b><span class="m">recall@50 · human qrels</span></div>
-      <div class="fact"><b>70<small>%</small></b><span class="m">abstention · 5.4% false</span></div>
+      <div class="fact"><b>71<small>%</small></b><span class="m">abstention · 5.4% false</span></div>
       <div class="fact"><b id="fChunks">300,603</b><span class="m">chunks · MSMARCO-XI</span></div>
     </div>
   </header>
@@ -335,14 +335,14 @@ footer .team{margin-left:auto;color:var(--ink)}
       <div class="req"><u>REQ 03</u><h3>Under 200 ms</h3><p><b>1500/1500</b> requests inside the
         window across warm, cold and concurrency-4. Enforced, not hoped for: a stage that cannot
         finish is never entered.</p></div>
-      <div class="req"><u>REQ 04</u><h3>Latency analytics</h3><p><b>P50 45.2 · P70 53.9 · P100
-        136.0 ms</b> over 500 frozen queries × 3 modes, per stage, nearest-rank — never a single
+      <div class="req"><u>REQ 04</u><h3>Latency analytics</h3><p><b>P50 60.4 · P70 68.9 · P100
+        133.8 ms</b> over 500 frozen queries × 3 modes, per stage, nearest-rank — never a single
         best-case run.</p></div>
       <div class="req"><u>REQ 05</u><h3>Harness</h3><p>Six timed stages under one budget object, a
         degradation ladder, bounded deadlines on every unbounded call, structured JSON in and out,
         and <b>one tool call</b> the generator may make, capped at a single hop.</p></div>
       <div class="req"><u>REQ 06</u><h3>Guardrails</h3><p><b>Four gates</b> graded on 280 labelled
-        queries: 70.7% correct abstention against 5.4% false, 100% injection resistance. It knows
+        queries: 71.3% correct abstention against 5.4% false, 100% injection resistance. It knows
         when not to answer — the last two examples above show it.</p></div>
     </div>
   </section>
@@ -694,7 +694,7 @@ m.addEventListener("keyup",   e => { if(e.key===" "||e.key==="Enter"){ e.prevent
 (function ticker(){
   const items = [
     "<i>Verna Visionaries</i>", "<b>Task 02 — Voice RAG</b>",
-    "P50 <b>45.2 ms</b>", "1500/1500 in budget", "<i>8 chunking strategies</i>",
+    "P50 <b>55.8 ms</b>", "1500/1500 in budget", "<i>8 chunking strategies</i>",
     "recall@50 <b>0.892</b>", "abstention <b>84%</b> / false <b>3.8%</b>",
     "injection resistance <b>100%</b>", "<i>9 languages</i>",
     "MSMARCO-XI", "Sarvam speech-to-text",

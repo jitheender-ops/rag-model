@@ -57,7 +57,13 @@ K1, B = 1.2, 0.75   # bm25
 # corpus instead of asserting which words are dull -- and note this corpus is nine languages,
 # so English stopwords sit near 11% document frequency, which is why anything above 0.10 is
 # a no-op here.
-DF_SKIP = float(os.getenv("BM25_DF_SKIP", "0"))
+# ...and it is on now, because the deploy box answered the question the measurement could
+# not. At 300k chunks on Modal's cores BM25 ran 82.7 ms of a 200 ms budget, generate was
+# skipped for want of room, and every query came back refused with no citation. The choice
+# stopped being "7.5x for 27% of BM25's own top-10" and became "that, or a system that
+# refuses everything". Fusion weights BM25 at 0.1, so what moves in the final ranking is a
+# fraction of that 27%; the guardrail numbers below it are re-graded with this on.
+DF_SKIP = float(os.getenv("BM25_DF_SKIP", "0.05"))
 
 HASH_DIM = 4096     # hashed-backend vector dimensionality
 MODEL_NAME = os.getenv("EMBED_MODEL", "intfloat/multilingual-e5-small")

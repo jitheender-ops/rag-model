@@ -29,7 +29,17 @@ MAX_TOKENS, MAX_TOKENS_DEGRADED = 96, 48
 # The old 8 ms was a placeholder from before there was a real transformer behind it, and a
 # stage budget below the stage's own P50 makes every request look like a violation.
 EMBED_BUDGET_MS = float(os.getenv("EMBED_BUDGET_MS", "30"))
-LEXICAL_RESERVE_MS = 20.0   # what retrieve+rerank+generate+verify need after the encoder
+# What retrieve+rerank+generate+verify need after the encoder -- and it is measured, not
+# assumed, because it was 20 ms and that number was true of a 12,024-chunk corpus. At 300k
+# the same four stages cost, at P95: retrieve 35.0 + rerank 36.1 + generate 24.9 + verify 0.1
+# = 96 ms. A reserve five times too small let one stalled encode wait 169 ms and hand the
+# rest of the pipeline 20 ms to do 96 ms of work, which is the single request that went over
+# 200 ms in D3.
+#
+# It is NOT a cap on the wait in the style encoder_deadline warns about: at 100 ms reserved
+# the encoder may still wait ~100 ms, thirteen times its 7.4 ms P50, so only a genuine stall
+# reaches it. What changed is that the stall now yields in time for the work it is holding up.
+LEXICAL_RESERVE_MS = float(os.getenv("LEXICAL_RESERVE_MS", "100"))
 # What must be left when generate stops waiting for sentence vectors: verify's own 20 ms
 # budget plus the lexical fallback, which costs ~10 ms under 4-way contention because it is
 # Python under a contended GIL. At 10 ms this was too tight and verify got SKIPPED -- see
@@ -212,7 +222,21 @@ def _pool():
     global _POOL
     if _POOL is None:
         from concurrent.futures import ThreadPoolExecutor
-        _POOL = ThreadPoolExecutor(max_workers=int(os.getenv("ENCODER_THREADS", "4")),
+        # Two, and the number is measured. Four let four requests run four torch forward
+        # passes at once, and that is contention rather than parallelism -- the same finding
+        # this file already records for the reranker, arrived at again from the other end.
+        # Wall time per encode under concurrency-4, QUEUEING INCLUDED, so this is not a
+        # throughput-for-latency trade; the smaller pool wins outright:
+        #
+        #   pool=4   P50 32.4   P95 65.0   P100 65.2 ms
+        #   pool=3   P50 23.9   P95 29.6   P100 30.7 ms
+        #   pool=2   P50 20.3   P95 27.3   P100 27.5 ms   <- ships
+        #   pool=1   P50 16.3   P95 26.2   P100 26.8 ms
+        #
+        # It is 2 rather than 1 because embed_many_by shares this pool: at one worker a
+        # generate() sentence encode blocks the next request's query encode outright, and
+        # the two are not competing for the same millisecond of the same request.
+        _POOL = ThreadPoolExecutor(max_workers=int(os.getenv("ENCODER_THREADS", "2")),
                                    thread_name_prefix="encoder")
     return _POOL
 
@@ -940,10 +964,20 @@ def demo():
     assert starved.meta["abstain"], starved.meta
     assert not starved.meta["answer"], "an unverified answer must never be returned"
 
-    # the encoder deadline shrinks with the budget and never waits past 2x the stage budget
+    # The encoder deadline shrinks with the budget, always leaving the reserve behind, and
+    # never returns zero. Asserted against the constant rather than against a number copied
+    # out of it: the previous line said `== 10.0`, which was 30 - 20 and stopped being true
+    # the moment the reserve was re-measured against a 25x larger corpus. A test that has to
+    # be edited whenever a measurement changes is testing the measurement, not the behaviour.
     assert encoder_deadline(200.0) == 200.0 - LEXICAL_RESERVE_MS
-    assert encoder_deadline(30.0) == 10.0
+    assert encoder_deadline(LEXICAL_RESERVE_MS + 10.0) == 10.0
     assert encoder_deadline(5.0) == 5.0, "a starved request still gets a floor, not a zero"
+    assert encoder_deadline(0.0) == 5.0, "and the floor holds when nothing is left at all"
+    # the reserve has to cover what actually runs after the encoder, or a stalled encode
+    # hands the rest of the pipeline less time than it needs -- which is exactly how one
+    # request reached 205 ms with the reserve still set for a 12k-chunk corpus
+    assert LEXICAL_RESERVE_MS >= GENERATE_RESERVE_MS, \
+        "the encoder must not leave less behind than generate alone reserves"
     assert embed_by("bridge", 5000.0) is not None, "a generous deadline must return a vector"
     assert embed_many_by(["a", "b"], 5000.0) is not None
     # the deadline mechanism itself, timed against a sleep rather than against the encoder:

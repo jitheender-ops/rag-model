@@ -5,8 +5,8 @@
 | machine | arm64 / 10 vCPU |
 | region | local |
 | provider | Darwin |
-| date | 2026-08-18 17:28 IST |
-| commit | 4433cea |
+| date | 2026-08-19 22:52 IST |
+| commit | 3747067 |
 | embedder | intfloat/multilingual-e5-small / 384d |
 | python | 3.13.7 |
 | seed | 42 |
@@ -14,7 +14,7 @@
 | budget | 200 ms |
 
 
-> **200 ms budget: PASS.** 1500/1500 requests inside the window across every mode (warm 0/500, cold 0/500, conc 0/500 over budget). Slowest single request 176.4 ms. Excluded legs are listed below and are not part of this verdict.
+> **200 ms budget: PASS.** 1500/1500 requests inside the window across every mode (warm 0/500, cold 0/500, conc 0/500 over budget). Slowest single request 175.3 ms. Excluded legs are listed below and are not part of this verdict.
 
 
 ## The window
@@ -34,29 +34,29 @@ excluded legs (P50 / P95 / P100, ms): STT 520.7 / 856.5 / 856.5 over 6 clips via
 
 | stage             |  P50 |  P70 |  P95 | P100 |
 |-------------------|------|------|------|------|
-| input guards      | 0.01 | 0.01 | 0.02 | 0.03 |
-| embed query       | 9.07 | 9.56 | 10.71 | 15.43 |
-| dense + bm25 + rrf | 1.38 | 2.01 | 3.15 | 4.28 |
-| rerank            | 20.93 | 29.38 | 40.23 | 43.92 |
-| generate          | 14.31 | 17.63 | 24.59 | 90.56 |
-| verify            | 0.05 | 0.06 | 0.08 | 0.24 |
-| END-TO-END (warm) | 45.21 | 53.88 | 69.61 | 136.03 |
-| END-TO-END (cold) | 49.03 | 56.43 | 74.04 | 134.68 |
+| input guards      | 0.01 | 0.01 | 0.01 | 0.44 |
+| embed query       | 7.34 | 7.73 | 8.91 | 23.51 |
+| dense + bm25 + rrf | 10.28 | 12.23 | 18.08 | 23.23 |
+| rerank            | 26.99 | 30.14 | 37.08 | 55.48 |
+| generate          | 13.90 | 17.10 | 25.27 | 75.33 |
+| verify            | 0.04 | 0.04 | 0.07 | 0.31 |
+| END-TO-END (warm) | 55.81 | 63.52 | 77.62 | 124.16 |
+| END-TO-END (cold) | 58.81 | 66.56 | 89.47 | 125.95 |
 
-degradation rate: 0.0%   cache hit rate: 9.8%   n=500, seed 42   over-budget: 0/500 (0.0%)
+degradation rate: 0.0%   cache hit rate: 12.4%   n=500, seed 42   over-budget: 0/500 (0.0%)
 
 
-> 9.8% of warm queries hit the semantic cache. The cache-off cold row is published beside the warm one; read it as the cost of a first-time question.
+> 12.4% of warm queries hit the semantic cache. The cache-off cold row is published beside the warm one; read it as the cost of a first-time question.
 
 
 ## P100, said out loud
 
-P100 over 500 samples is one observation: it is the max and it is unstable by construction. P95 = 69.6 ms, P99 = 80.1 ms, P100 = 136.0 ms. P100 = 136.0 ms on `s077` (spoken, hi); the dominant stage was **generate** at 90.6 ms, fallbacks fired: none.
+P100 over 500 samples is one observation: it is the max and it is unstable by construction. P95 = 77.6 ms, P99 = 97.6 ms, P100 = 124.2 ms. P100 = 124.2 ms on `s093` (spoken, mr); the dominant stage was **generate** at 75.3 ms, fallbacks fired: none.
 
 
 ## Concurrency
 
-A separate `--concurrency 4` pass over the same 500 queries: P50 114.5 ms, P95 155.5 ms, over-budget 0/500.
+A separate `--concurrency 4` pass over the same 500 queries: P50 121.8 ms, P95 155.2 ms, over-budget 0/500.
 
 
 ![per-stage latency](latency.svg)

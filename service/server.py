@@ -235,6 +235,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path.split("?")[0] != "/ask":
             return self._send(404, {"error": f"no route {self.path}; POST /ask"})
+        if not STATE.get("ready"):
+            # The socket opens before the index is loaded, so this window is real and short.
+            # 503 with Retry-After is the honest answer: the page is already polling /health
+            # and will start asking the moment it says ok.
+            self.send_response(503)
+            self.send_header("Retry-After", "5")
+            body = json.dumps({"error": "still loading the index — try again in a few seconds",
+                               "status": "loading"}).encode()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            return self.wfile.write(body)
         length = int(self.headers.get("Content-Length") or 0)
         if length > MAX_BODY:
             return self._send(413, {"error": f"body over {MAX_BODY} bytes"})
@@ -340,10 +353,26 @@ def self_warm(port: int, n: int = 3):
 
 
 def main():
+    """Open the socket first, load the index behind it.
+
+    This inverts what this file used to do on purpose, and the reason is a measurement: at
+    12k chunks boot() took ~10 s and loading before listening was free honesty. At 300k it
+    loads a 498 MB matrix, a 544 MB graph and a 300k-entry text map, then exercises the whole
+    path three times -- and a serverless host that waits for the port gave up first. Modal
+    cancels a request at 300 s, so every visitor got a 500 from a box that was working
+    perfectly and simply had not finished reading.
+
+    Nothing about the honesty is lost, because readiness is still reported rather than
+    assumed: /health says `loading` until the path is warm, /ask returns 503 with a
+    Retry-After until then, and the page already waits for `ok` before it asks anything. What
+    changed is that the box can now say "not yet" instead of being unreachable while it means
+    it.
+    """
     port = int(os.getenv("PORT", "8000"))
-    boot()
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    self_warm(port)
+    print(f"listening on :{port} — loading the index now, /health will say when it is warm",
+          flush=True)
+    threading.Thread(target=lambda: (boot(), self_warm(port)), daemon=True).start()
     print(f"\n  demo page  http://localhost:{port}/\n"
           f"  endpoint   http://localhost:{port}/ask\n"
           f"  health     http://localhost:{port}/health\n\nctrl-c to stop", flush=True)

@@ -24,3 +24,7 @@ data/audio/*
 # -- so what is checked in is still enough to detect a mismatch, just not to avoid a rebuild.
 data/corpus.jsonl
 data/msmarco_queries.jsonl
+
+# the MSMARCO-XI train shards: 3.7 GB each, and the ingest samples a few thousand rows
+# from them. What belongs in the repo is the frozen sample, not the quarry it came from.
+training data/
